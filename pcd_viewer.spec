@@ -61,7 +61,7 @@ a = Analysis(
 # (numpy's pure C code is in _multiarray_umath.pyd, not in MKL)
 MKL_PREFIXES = ('mkl_', 'libiomp', 'libmmd', 'svml_', 'libirc', 'impi',
                 'msmpi', 'pgc', 'pgmath', 'pgf', 'ze_', 'sycl',
-                'omptarget', 'msvcp', 'concrt')
+                'omptarget')
 
 def _keep(tup):
     name = os.path.basename(tup[0]).lower()
