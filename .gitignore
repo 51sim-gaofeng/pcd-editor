@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.pcd_cache/
+_dropped/
+*.pcd
+trajectories/
+*.bin
+*.mtime
+.vscode/

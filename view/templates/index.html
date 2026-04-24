@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>4DGS Lidar PCD Viewer</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="main-row">
+<aside id="sidebar">
+  <h1>&#9729; 4DGS Lidar PCD Viewer</h1>
+  <div id="sidebar-scroll">
+  <details id="sec-file" open>
+    <summary>&#128194; File</summary>
+    <div class="sec">
+      <select class="full" id="file-select" onchange="onFileSelect(this.value)">
+        <option value="">&#8212; select file &#8212;</option>
+      </select>
+      <div class="grid2">
+        <button class="btn"       onclick="pickFileNative()">&#128196; Open File…</button>
+        <button class="btn"       onclick="pickDirNative()">&#128194; Open Dir…</button>
+      </div>
+      <button class="btn ghost full-w" onclick="refreshList()">&#8634; Refresh List</button>
+    </div>
+  </details>
+  <details id="sec-view">
+    <summary>&#128065; View</summary>
+    <div class="sec">
+      <!-- Camera -->
+      <div class="grp">
+        <div class="grp-title">Camera</div>
+        <div class="grid4">
+          <button class="view-btn active" id="view-3d"    onclick="setView('3d')">3D</button>
+          <button class="view-btn"        id="view-top"   onclick="setView('top')">Top</button>
+          <button class="view-btn"        id="view-front" onclick="setView('front')">Front</button>
+          <button class="view-btn"        id="view-left"  onclick="setView('left')">Left</button>
+        </div>
+        <button class="btn full-w" id="view-free" onclick="setView('free')" title="Free fly: WASD move, QE up/down, mouse look, Shift boost, Esc exit (F)">&#9992; Free Fly (F)</button>
+        <button class="btn ghost full-w" onclick="resetCamera()">&#x2316; Reset Camera</button>
+      </div>
+
+      <!-- Points -->
+      <div class="grp">
+        <div class="grp-title">Points</div>
+        <div class="row">
+          <span class="lbl">Size</span>
+          <input type="range" id="pt-size" min="0.5" max="5" step="0.5" value="1.5" oninput="updatePointSize(this.value)">
+          <span id="pt-size-val" style="width:26px;text-align:right;color:#cbd5e1">1.5</span>
+        </div>
+        <div class="row">
+          <span class="lbl">Color</span>
+          <select id="color-mode" onchange="applyColorMode(this.value)" style="flex:1">
+            <option value="height">Height (Z)</option>
+            <option value="intensity">Intensity</option>
+            <option value="flat">Flat</option>
+          </select>
+        </div>
+        <div class="row" id="z-lock-row">
+          <button id="z-lock-btn" class="btn ghost" onclick="toggleZLock()" title="Lock/unlock height color range" style="font-size:.62rem;padding:2px 8px">&#128275; Lock Z</button>
+          <span id="z-lock-indicator" style="font-size:.6rem;color:#64748b;flex:1">auto per-frame</span>
+        </div>
+        <div class="row">
+          <span class="lbl">Flip</span>
+          <label><input type="checkbox" id="flip-x" onchange="applyFlip()"> X</label>
+          <label><input type="checkbox" id="flip-y" onchange="applyFlip()"> Y</label>
+          <label><input type="checkbox" id="flip-z" onchange="applyFlip()"> Z</label>
+        </div>
+      </div>
+
+      <!-- Filter Z -->
+      <div class="grp">
+        <div class="grp-title">Filter Z</div>
+        <div class="grid2">
+          <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Min</span><input type="number" id="flt-zmin" step="0.1" value="0" oninput="applyHeightFilter()"></label>
+          <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Max</span><input type="number" id="flt-zmax" step="0.1" value="1" oninput="applyHeightFilter()"></label>
+        </div>
+        <div class="grid3">
+          <button class="seg-btn active" id="flt-keep" onclick="setFilterMode('keep')">Keep</button>
+          <button class="seg-btn"        id="flt-excl" onclick="setFilterMode('exclude')">Exclude</button>
+          <button class="btn ghost" onclick="resetHeightFilter()">Reset</button>
+        </div>
+      </div>
+
+      <!-- Grid -->
+      <div class="grp">
+        <div class="grp-title">Grid</div>
+        <div class="row">
+          <label style="flex:1"><input type="checkbox" id="grid-show" checked onchange="applyGrid()"> Show</label>
+        </div>
+        <div class="grid2">
+          <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Size</span><input type="number" id="grid-size" value="200" min="1" max="10000" step="10" onchange="applyGrid()"></label>
+          <label class="row" style="gap:3px" title="cell size (m)"><span style="font-size:.7rem;color:#64748b">Step</span><input type="number" id="grid-step" value="1" min="0.1" max="100" step="0.5" onchange="applyGrid()"></label>
+        </div>
+      </div>
+    </div>
+  </details>
+  <details id="sec-play">
+    <summary>&#9654; Playback</summary>
+    <div class="sec">
+      <div style="font-size:.7rem;color:#475569;text-align:center">Frame <span id="play-idx" style="color:#cbd5e1">0</span> / <span id="play-total">0</span></div>
+      <input type="range" id="play-seek" min="0" max="0" value="0" style="width:100%;accent-color:#34d399" oninput="playSeek(parseInt(this.value))">
+      <div class="grid3">
+        <button class="btn ghost" onclick="playStep(-1)" title="Prev (←)">&#9664; Prev</button>
+        <button class="btn"       id="btn-play" onclick="playToggle()">&#9654; Play</button>
+        <button class="btn ghost" onclick="playStep(1)" title="Next (→)">Next &#9654;</button>
+      </div>
+      <div class="row">
+        <span class="lbl">FPS</span>
+        <input type="range" id="play-fps" min="1" max="30" step="1" value="10" oninput="playSetFps(parseInt(this.value))" style="flex:1;accent-color:#34d399">
+        <span id="play-fps-val" style="width:26px;text-align:right;color:#cbd5e1">10</span>
+      </div>
+      <div style="font-size:.65rem;color:#334155;text-align:center">←→ step · Space play/pause</div>
+    </div>
+  </details>
+  <details id="sec-traj">
+    <summary>&#9998; Trajectory</summary>
+    <div class="sec">
+      <div class="grid2">
+        <button class="btn" id="btn-pick" onclick="togglePick()" title="Inspect point">&#128269; Pick</button>
+        <button class="btn" id="btn-draw" onclick="toggleDraw()" title="Place waypoints">&#9998; Draw</button>
+      </div>
+      <div class="row">
+        <span class="lbl">Z def</span>
+        <input type="number" id="wp-z" step="0.01" value="0.00" style="flex:1">
+        <span id="traj-count" style="font-size:.7rem;color:#94a3b8;width:50px;text-align:right">0 pts</span>
+      </div>
+      <div class="grid2">
+        <button class="btn ghost" onclick="trajUndo()">&#x21A9; Undo</button>
+        <button class="btn ghost" onclick="trajClear()">&#10005; Clear</button>
+      </div>
+      <div class="grp">
+        <div class="grp-title">I/O</div>
+        <div class="grid2">
+          <button class="btn" onclick="trajExport()">&#8595; Export</button>
+          <label class="btn" style="cursor:pointer;text-align:center">&#8593; Import<input type="file" id="traj-import" accept=".json" style="display:none" onchange="trajImport(this)"></label>
+        </div>
+        <div class="grid2">
+          <button class="btn" onclick="trajSaveServer()">&#128190; Save</button>
+          <button class="btn ghost" onclick="refreshTrajList()">&#8634; Reload</button>
+        </div>
+        <select class="full" id="traj-server-list" onchange="trajLoadServer(this.value)">
+          <option value="">&#8212; server trajs &#8212;</option>
+        </select>
+      </div>
+    </div>
+  </details>
+  <details id="sec-edit">
+    <summary>&#9986; Edit Cloud</summary>
+    <div class="sec">
+      <div class="grid2">
+        <button class="btn" id="btn-lasso"  onclick="toggleLasso()"  title="Freehand select region">&#9986; Lasso</button>
+        <button class="btn" id="btn-eraser" onclick="toggleEraser()" title="Brush select points">&#9711; Eraser</button>
+      </div>
+      <div class="row">
+        <span class="lbl">Radius</span>
+        <input type="range" id="eraser-r" min="5" max="80" step="5" value="20" oninput="updateEraserRadius(this.value)">
+        <span id="eraser-r-val" style="width:26px;text-align:right;color:#cbd5e1">20</span>
+      </div>
+      <div class="grid2">
+        <button class="btn danger" onclick="deleteSelected()">&#10005; Delete <span id="sel-count"></span></button>
+        <button class="btn ghost"  id="edit-undo-btn" style="display:none" onclick="undoDelete()">&#x21A9; Undo</button>
+      </div>
+      <div class="grid2">
+        <button class="btn ghost" onclick="clearSelection()">Deselect</button>
+        <button class="btn"       onclick="savePcd()">&#128190; Save PCD</button>
+      </div>
+    </div>
+  </details>
+  <div style="flex:1;min-height:8px"></div>
+  </div><!-- #sidebar-scroll -->
+  <div id="status-bar">
+    <div id="status">idle</div>
+    <div id="info"></div>
+  </div>
+</aside>
+<div id="resize-handle"><button id="sidebar-toggle" title="Toggle sidebar (B)" onclick="toggleSidebar()">&#9664;</button></div>
+<div id="canvas-wrap">
+  <div id="overlay" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;pointer-events:none">
+    <span style="font-size:2.5rem">&#9729;</span>
+    <span style="font-size:1rem;color:#374151">Select a PCD file</span>
+  </div>
+  <canvas id="cv"></canvas>
+  <canvas id="lasso-canvas"></canvas>
+  <div id="traj-hint"   class="hint">Draw mode &#8212; click to place waypoints &nbsp;<button onclick="exitAllModes()" style="background:rgba(255,255,255,.15);border:none;color:inherit;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:.75rem">&#10005; Exit</button></div>
+  <div id="pick-hint"   class="hint">Pick mode &#8212; click on a point to inspect &nbsp;<button onclick="exitAllModes()" style="background:rgba(255,255,255,.15);border:none;color:inherit;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:.75rem">&#10005; Exit</button></div>
+  <div id="lasso-hint"  class="hint">Lasso &#8212; drag to select &nbsp;<button onclick="exitAllModes()" style="background:rgba(255,255,255,.15);border:none;color:inherit;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:.75rem">&#10005; Exit</button> &nbsp;<span style="opacity:.65;font-size:.7rem">ESC</span></div>
+  <div id="eraser-hint" class="hint">Eraser &#8212; drag to brush-erase &nbsp;<button onclick="exitAllModes()" style="background:rgba(255,255,255,.15);border:none;color:inherit;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:.75rem">&#10005; Exit</button> &nbsp;<span style="opacity:.65;font-size:.7rem">ESC</span></div>
+  <div id="free-hint"   class="hint" style="display:none">Free fly &#8212; <b>Hold RMB</b> to look &nbsp;<b>WASD</b> move &nbsp;<b>QE</b> down/up &nbsp;<b>Wheel</b> speed &nbsp;<b>Shift</b> boost &nbsp;<b>Esc/F</b> exit</div>
+  <div id="pick-popup" class="popup"></div>
+  <div id="wp-popup"   class="popup">
+    <div id="wp-popup-content"></div>
+    <div style="margin-top:8px;border-top:1px solid #334155;padding-top:6px;display:flex;gap:6px">
+      <button class="btn danger" style="font-size:.7rem;padding:2px 8px" onclick="wpDelete(window._wpPopupIdx)">&#128465; Delete</button>
+      <button class="btn ghost"  style="font-size:.7rem;padding:2px 8px" onclick="hideWpPopup()">&#10005; Close</button>
+    </div>
+  </div>
+  <div id="axes-label">
+    <span style="color:#ef4444">&#9632; X</span>
+    <span style="color:#22c55e">&#9632; Y</span>
+    <span style="color:#3b82f6">&#9632; Z</span>
+  </div>
+</div>
+</div><!-- #main-row -->
+<div id="log-panel">
+  <div id="log-resize-bar"></div>
+  <div id="log-panel-bar">
+    <span id="log-panel-title">&#128221; Log</span>
+    <button id="log-panel-clear" onclick="clearLog()" title="Clear log">&#10005; Clear</button>
+    <button id="log-panel-toggle" onclick="toggleLogPanel()" title="Toggle log (L)">&#9650; Hide</button>
+  </div>
+  <div id="log-entries"></div>
+</div>
+<div id="dir-modal-overlay" onclick="if(event.target===this)closeDirModal()">
+  <div id="dir-modal">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <h2>&#128193; Browse Directory</h2>
+      <button class="btn ghost" onclick="closeDirModal()" style="padding:2px 8px;font-size:.8rem">&#10005;</button>
+    </div>
+    <div id="dir-modal-cwd" style="font-size:.68rem;color:#475569"></div>
+    <div class="row" style="gap:5px">
+      <input type="text" id="dir-path-input" placeholder="Directory path…" onkeydown="if(event.key==='Enter')browseDirInput()">
+      <button class="btn ghost" style="padding:3px 9px" onclick="browseDirInput()">Go</button>
+      <button class="btn ghost" style="padding:3px 9px" title="Parent directory" onclick="browseUp()">&#8593; Up</button>
+      <button class="btn ghost" style="padding:3px 9px" title="弹出系统选择文件夹对话框" onclick="pickDirNative()">&#128194; Pick…</button>
+      <button class="btn ghost" style="padding:3px 9px" title="在资源管理器中打开当前目录" onclick="openInExplorer()">&#128221; Explorer</button>
+    </div>
+    <div id="dir-list"></div>
+  </div>
+</div>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"}}
+</script>
+<script type="module" src="/static/three_view.js"></script>
+<script defer src="/static/ui.js"></script>
+</body>
+</html>
