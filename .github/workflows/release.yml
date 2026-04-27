@@ -87,7 +87,7 @@ jobs:
         run: |
           mkdir -p sample
           cp dist/pcd_viewer sample/
-          cd sample && zip -r ../dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip .
+          zip -r dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip sample/
           rm sample/pcd_viewer
 
       # ── Upload to Release (both platforms write to the same release) ───────
