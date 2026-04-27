@@ -2,9 +2,10 @@
 """
 PyInstaller spec for pcd_viewer — lean build.
 Excludes heavy unused packages (matplotlib, PyQt5, scipy, numba, MKL, etc.)
-to keep exe size small.
+to keep binary size small.
+Supports both Windows and Linux.
 """
-import os
+import os, sys
 
 block_cipher = None
 
@@ -25,11 +26,16 @@ EXCLUDES = [
     'test', 'unittest',
     'xml.etree', 'xmlrpc',
     'pydoc', 'turtle', 'curses',
-    'pywin32', 'pythoncom', 'pywintypes', 'win32api', 'win32com',
     'setuptools', 'pkg_resources',
     'distutils',
-    'multiprocessing.popen_spawn_win32',
 ]
+
+# Windows-only modules — harmless to skip on Linux (they don't exist there)
+if sys.platform == 'win32':
+    EXCLUDES += [
+        'pywin32', 'pythoncom', 'pywintypes', 'win32api', 'win32com',
+        'multiprocessing.popen_spawn_win32',
+    ]
 
 a = Analysis(
     ['pcd_viewer.py'],

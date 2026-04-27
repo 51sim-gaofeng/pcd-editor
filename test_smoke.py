@@ -20,7 +20,9 @@ PORT   = 18089          # use a non-default port to avoid conflicts
 HOST   = "127.0.0.1"
 BASE   = f"http://{HOST}:{PORT}"
 SCRIPT = os.path.join(os.path.dirname(__file__), "pcd_viewer.py")
-EXE    = os.path.join(os.path.dirname(__file__), "dist", "pcd_viewer.exe")
+# Binary name differs by platform: .exe on Windows, no extension on Linux/macOS
+_BIN   = "pcd_viewer.exe" if sys.platform == "win32" else "pcd_viewer"
+EXE    = os.path.join(os.path.dirname(__file__), "dist", _BIN)
 
 CHECKS = [
     ("GET /",                    "/",                     200, "text/html"),

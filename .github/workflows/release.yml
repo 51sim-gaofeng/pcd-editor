@@ -1,0 +1,97 @@
+name: Build & Release
+
+# Trigger: push a version tag like v0.1.2
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false   # don't cancel the other platform if one fails
+      matrix:
+        include:
+          - os: windows-latest
+            bin_name: pcd_viewer.exe
+            platform: windows-x64
+          - os: ubuntu-latest
+            bin_name: pcd_viewer
+            platform: linux-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Linux: tkinter (file-picker) + upx (binary compression)
+      - name: Install system deps (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-tk upx-ucl
+
+      # pip numpy has no MKL dependency — keeps binary small (~20 MB)
+      - name: Install Python dependencies
+        run: pip install numpy pyinstaller
+
+      - name: Build binary
+        run: python -m PyInstaller pcd_viewer.spec --clean --noconfirm
+
+      - name: Show binary size (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $mb = (Get-Item dist\pcd_viewer.exe).Length / 1MB
+          Write-Host "binary size: $([math]::Round($mb,1)) MB"
+
+      - name: Show binary size (Linux)
+        if: runner.os == 'Linux'
+        run: du -sh dist/pcd_viewer
+
+      - name: Smoke test
+        run: python test_smoke.py --exe
+
+      # ── Windows packaging ──────────────────────────────────────────────────
+      - name: Package binary-only zip (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Compress-Archive -Path dist\pcd_viewer.exe `
+            -DestinationPath dist\pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip
+
+      - name: Package binary + samples zip (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Copy-Item dist\pcd_viewer.exe sample\
+          Compress-Archive -Path sample `
+            -DestinationPath dist\pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip
+          Remove-Item sample\pcd_viewer.exe
+
+      # ── Linux packaging ────────────────────────────────────────────────────
+      - name: Package binary-only zip (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd dist
+          zip pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip pcd_viewer
+
+      - name: Package binary + samples zip (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cp dist/pcd_viewer sample/
+          cd sample && zip -r ../dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip .
+          rm sample/pcd_viewer
+
+      # ── Upload to Release (both platforms write to the same release) ───────
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "${{ github.ref_name }}"
+          generate_release_notes: true
+          files: |
+            dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip
+            dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip
