@@ -22,6 +22,7 @@ import sys
 import io
 import threading
 import socket
+import webbrowser
 from http.server import ThreadingHTTPServer
 
 # Force stdout/stderr to UTF-8 so Unicode characters (e.g. →) don't crash on
@@ -112,13 +113,13 @@ def main():
     except ImportError:
         # pywebview not installed — fall back to browser mode
         print("pywebview not found, running in browser mode.")
-        print(f"Open  {url}  in your browser.")
-        print("Ctrl+C to stop.")
+        print(f"Opening  {url}  in your browser...")
+        webbrowser.open(url)
     except Exception as _wv_err:
         # No GUI backend available (headless CI, no DISPLAY, missing gi/qt)
         print(f"pywebview unavailable ({_wv_err}), running in browser mode.")
-        print(f"Open  {url}  in your browser.")
-        print("Ctrl+C to stop.")
+        print(f"Opening  {url}  in your browser...")
+        webbrowser.open(url)
 
     # ── Browser / headless mode ────────────────────────────────────────────
     try:

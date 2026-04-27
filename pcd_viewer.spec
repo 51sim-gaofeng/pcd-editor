@@ -6,8 +6,12 @@ to keep binary size small.
 Supports both Windows and Linux.
 """
 import os, sys
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
+
+# Collect all pywebview files (data, binaries, hidden imports)
+_wv_d, _wv_b, _wv_h = collect_all('webview')
 
 # Packages to exclude (pulled in transitively by numpy/pandas but unused here)
 EXCLUDES = [
@@ -21,13 +25,14 @@ EXCLUDES = [
     'cv2', 'imageio',
     'sqlalchemy', 'psycopg2',
     'cryptography', 'OpenSSL',
-    'wx', 'gi', 'gtk',
+    'wx',
+    # NOTE: do NOT exclude gi/gtk — pywebview needs them on Linux
     'docutils', 'sphinx',
     'test', 'unittest',
     'xml.etree', 'xmlrpc',
     'pydoc', 'turtle', 'curses',
     'setuptools', 'pkg_resources',
-    'distutils',
+    # NOTE: do NOT exclude distutils — pywebview/pythonnet dependency chain needs it
 ]
 
 # Windows-only modules — harmless to skip on Linux (they don't exist there)
@@ -40,22 +45,20 @@ if sys.platform == 'win32':
 a = Analysis(
     ['pcd_viewer.py'],
     pathex=['.'],
-    binaries=[],
+    binaries=[] + _wv_b,
     datas=[
         (os.path.join('view', 'templates'), os.path.join('view', 'templates')),
         (os.path.join('view', 'static'),    os.path.join('view', 'static')),
-    ],
+    ] + _wv_d,
     hiddenimports=[
         'numpy',
         'tkinter',
         'tkinter.filedialog',
-        # pywebview runtime dependencies
-        'webview',
-        'webview.platforms.winforms',
-        'webview.platforms.gtk',
-        'webview.platforms.cocoa',
+        # pythonnet/clr — pywebview WinForms backend (Windows)
         'clr',
-    ],
+        'clr_loader',
+        'pythonnet',
+    ] + _wv_h + collect_submodules('webview'),
     hookspath=[],
     hooksconfig={
         # Tell numpy hook NOT to include MKL/BLAS test/benchmark data
