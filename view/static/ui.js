@@ -194,7 +194,7 @@ async function loadFile(path){
     document.getElementById('info').textContent=npoints.toLocaleString()+' pts'+(original_count!==npoints?' (↓'+original_count.toLocaleString()+')':'')+'  ·  '+(fname||path);setStatus('OK','ok');
   }catch(e){setStatus('fetch error','err');console.error(e);}
 }
-function updatePointSize(v){document.getElementById('pt-size-val').textContent=parseFloat(v).toFixed(1);window._three.setPointSize(parseFloat(v));window._three.setPickThreshold(parseFloat(v)*0.12);}
+function updatePointSize(v){document.getElementById('pt-size-val').textContent=parseFloat(v).toFixed(1);window._three.setPointSize(parseFloat(v));window._three.setPickThreshold(parseFloat(v)*0.05);}
 function applyColorMode(v){window._three.setColorMode(v);}function resetCamera(){window._three.resetCamera();}
 function applyGrid(){
   const show=document.getElementById('grid-show').checked;

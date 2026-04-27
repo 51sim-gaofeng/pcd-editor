@@ -328,7 +328,7 @@ function deleteWaypointAt(idx){
 }
 
 let _dragIdx=-1,_dragActive=false;
-const _ray=new THREE.Raycaster();_ray.params.Points={threshold:0.3};
+const _ray=new THREE.Raycaster();_ray.params.Points={threshold:ptSize*0.05};
 canvas.addEventListener('mousedown',e=>{
   if(lassoMode||eraserMode)return;
   if((!drawMode&&!pickMode)||e.button!==0||!wpMarkers.length)return;
@@ -366,9 +366,12 @@ canvas.addEventListener('click',e=>{
   }
   if(pickMode&&pointCloud){
     const rect=canvas.getBoundingClientRect();const ndc=new THREE.Vector2(((e.clientX-rect.left)/rect.width)*2-1,-((e.clientY-rect.top)/rect.height)*2+1);
+    _ray.params.Points.threshold=ptSize*0.05;
     _ray.setFromCamera(ndc,camera);const hits=_ray.intersectObject(pointCloud);
     if(hits.length>0){
-      const h=hits[0],idx=h.index,pa=pointCloud.geometry.getAttribute('position');
+      // Pick the hit closest to the ray (screen click), not closest to camera
+      const h=hits.reduce((a,b)=>((a.distanceToRay||0)<=(b.distanceToRay||0)?a:b));
+      const idx=h.index,pa=pointCloud.geometry.getAttribute('position');
       const px=pa.getX(idx),py=pa.getY(idx),pz=pa.getZ(idx);const info={};
       rawFields.forEach((fn,fi)=>{const raw=rawFloats?rawFloats[idx*rawNfields+fi]:undefined;if(raw!==undefined)info[fn]=(Math.abs(raw)<1e4&&raw%1!==0)?raw.toFixed(4):raw;});
       info['x']=px.toFixed(4);info['y']=py.toFixed(4);info['z']=pz.toFixed(4);info['index']=idx;info['dist']=h.distance.toFixed(3)+' m';
