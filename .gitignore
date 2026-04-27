@@ -4,6 +4,7 @@ __pycache__/
 .pcd_cache/
 _dropped/
 *.pcd
+!sample/*.pcd
 trajectories/
 *.bin
 *.mtime
