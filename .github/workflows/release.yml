@@ -34,16 +34,17 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Linux: tkinter (file-picker) + upx (binary compression)
+      # Linux: tkinter (file-picker) + upx + webkit2gtk (pywebview)
       - name: Install system deps (Linux only)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y python3-tk upx-ucl
+          sudo apt-get install -y python3-tk upx-ucl \
+            libwebkit2gtk-4.0-dev libgtk-3-dev
 
       # pip numpy has no MKL dependency — keeps binary small (~20 MB)
       - name: Install Python dependencies
-        run: pip install numpy pyinstaller
+        run: pip install numpy pyinstaller pywebview
 
       - name: Build binary
         run: python -m PyInstaller pcd_viewer.spec --clean --noconfirm

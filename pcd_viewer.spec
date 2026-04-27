@@ -49,6 +49,12 @@ a = Analysis(
         'numpy',
         'tkinter',
         'tkinter.filedialog',
+        # pywebview runtime dependencies
+        'webview',
+        'webview.platforms.winforms',
+        'webview.platforms.gtk',
+        'webview.platforms.cocoa',
+        'clr',
     ],
     hookspath=[],
     hooksconfig={
@@ -92,7 +98,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,
+    console=False,  # no black terminal window when launched via pywebview
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

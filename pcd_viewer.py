@@ -21,6 +21,7 @@ MVC structure:
 import sys
 import io
 import threading
+import socket
 from http.server import ThreadingHTTPServer
 
 # Force stdout/stderr to UTF-8 so Unicode characters (e.g. →) don't crash on
@@ -42,20 +43,69 @@ from model.file_model import _preload_all, list_pcd_files
 
 
 
+def _wait_for_server(host: str, port: int, timeout: float = 10.0):
+    """Block until the HTTP server is accepting connections."""
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=0.2):
+                return True
+        except OSError:
+            time.sleep(0.05)
+    return False
+
+
 def main():
     init_from_args(sys.argv[1:])
+    # Bind only to localhost — pywebview opens the window directly, no need
+    # for external access. Honour explicit --ip override from the user.
+    bind_host = config.host
     ThreadingHTTPServer.allow_reuse_address = True
-    server = ThreadingHTTPServer((config.host, config.port), Handler)
+    server = ThreadingHTTPServer((bind_host, config.port), Handler)
     server.daemon_threads = True
-    _disp_host = 'localhost' if config.host in ('0.0.0.0', '127.0.0.1', '::') else config.host
-    print(f"PCD Viewer  ->  http://{_disp_host}:{config.port}  (bind {config.host})")
+    _disp_host = 'localhost' if bind_host in ('0.0.0.0', '127.0.0.1', '::') else bind_host
+    url = f"http://{_disp_host}:{config.port}"
+    print(f"PCD Viewer  ->  {url}  (bind {bind_host})")
     print(f"Data dir  : {config.data_dir}")
     n_files = len(list_pcd_files())
     print(f"PCD files : {n_files} found")
-    print("Ctrl+C to stop.")
+
     if n_files > 0:
         threading.Thread(target=_preload_all, daemon=True).start()
         print(f"Preloading {n_files} files in background...")
+
+    # ── Try to open a native window via pywebview ──────────────────────────
+    try:
+        import webview  # type: ignore
+
+        # Start HTTP server in background thread
+        srv_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        srv_thread.start()
+
+        # Wait until the server is ready before handing URL to webview
+        _wait_for_server(_disp_host, config.port)
+
+        print("Opening native window (pywebview)...")
+        webview.create_window(
+            "4DGS Lidar PCD Viewer",
+            url,
+            width=1440,
+            height=900,
+            resizable=True,
+            min_size=(800, 600),
+        )
+        webview.start()          # blocks until window is closed
+        server.shutdown()
+        return
+
+    except ImportError:
+        # pywebview not installed — fall back to browser mode
+        print("pywebview not found, running in browser mode.")
+        print(f"Open  {url}  in your browser.")
+        print("Ctrl+C to stop.")
+
+    # ── Browser / headless mode ────────────────────────────────────────────
     try:
         server.serve_forever()
     except KeyboardInterrupt:
