@@ -376,7 +376,8 @@ canvas.addEventListener('click',e=>{
       rawFields.forEach((fn,fi)=>{const raw=rawFloats?rawFloats[idx*rawNfields+fi]:undefined;if(raw!==undefined)info[fn]=(Math.abs(raw)<1e4&&raw%1!==0)?raw.toFixed(4):raw;});
       info['x']=px.toFixed(4);info['y']=py.toFixed(4);info['z']=pz.toFixed(4);info['index']=idx;info['dist']=h.distance.toFixed(3)+' m';
       if(pickMarker){scene.remove(pickMarker);pickMarker.geometry.dispose();}
-      pickMarker=new THREE.Mesh(new THREE.SphereGeometry(0.18,10,6),new THREE.MeshBasicMaterial({color:0x00ffcc,depthTest:false}));
+      const _mr=Math.max(0.015,h.distance*0.006);// scale with camera distance for consistent visual size
+      pickMarker=new THREE.Mesh(new THREE.SphereGeometry(_mr,10,6),new THREE.MeshBasicMaterial({color:0x00ffcc,depthTest:false}));
       pickMarker.position.set(px,py,pz);scene.add(pickMarker);showPickPopup(e.clientX,e.clientY,info);
     }else hidePickPopup();return;
   }
