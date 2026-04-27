@@ -76,6 +76,16 @@ def main():
         print(f"Preloading {n_files} files in background...")
 
     # ── Try to open a native window via pywebview ──────────────────────────
+    if config.no_window:
+        print("--no-window set, running as headless HTTP server.")
+        print(f"Open  http://{_disp_host}:{config.port}  in your browser.")
+        print("Ctrl+C to stop.")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\nStopping...")
+        return
+
     try:
         import webview  # type: ignore
 
@@ -102,6 +112,11 @@ def main():
     except ImportError:
         # pywebview not installed — fall back to browser mode
         print("pywebview not found, running in browser mode.")
+        print(f"Open  {url}  in your browser.")
+        print("Ctrl+C to stop.")
+    except Exception as _wv_err:
+        # No GUI backend available (headless CI, no DISPLAY, missing gi/qt)
+        print(f"pywebview unavailable ({_wv_err}), running in browser mode.")
         print(f"Open  {url}  in your browser.")
         print("Ctrl+C to stop.")
 

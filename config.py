@@ -11,6 +11,7 @@ class _Config:
         self.data_dir: str = ''
         self.port: int = 8089
         self.host: str = '127.0.0.1'
+        self.no_window: bool = False
 
     @property
     def traj_dir(self) -> str:
@@ -27,7 +28,9 @@ def init_from_args(argv):
     )
     ap.add_argument('--ip',   default='127.0.0.1', help='HTTP bind address (default: 127.0.0.1)')
     ap.add_argument('--port', type=int, default=8089, help='HTTP port (default: 8089)')
-    ap.add_argument('--dir',  default=None, help='Data directory containing .pcd files')
+    ap.add_argument('--dir',       default=None,  help='Data directory containing .pcd files')
+    ap.add_argument('--no-window', action='store_true', dest='no_window',
+                    help='Disable pywebview; run as headless HTTP server only')
     ap.add_argument('positional', nargs='*', help='[DIR] [PORT] (legacy positional form)')
     a = ap.parse_args(argv)
 
@@ -49,3 +52,4 @@ def init_from_args(argv):
     config.data_dir = a.dir
     config.port = a.port
     config.host = a.ip
+    config.no_window = a.no_window
