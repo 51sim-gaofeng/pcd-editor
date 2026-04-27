@@ -19,8 +19,22 @@ MVC structure:
 """
 
 import sys
+import io
 import threading
 from http.server import ThreadingHTTPServer
+
+# Force stdout/stderr to UTF-8 so Unicode characters (e.g. →) don't crash on
+# Windows consoles that default to cp1252 / cp936.
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+    try:
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 from config import config, init_from_args
 from controller.http_handler import Handler
@@ -34,7 +48,7 @@ def main():
     server = ThreadingHTTPServer((config.host, config.port), Handler)
     server.daemon_threads = True
     _disp_host = 'localhost' if config.host in ('0.0.0.0', '127.0.0.1', '::') else config.host
-    print(f"PCD Viewer  →  http://{_disp_host}:{config.port}  (bind {config.host})")
+    print(f"PCD Viewer  ->  http://{_disp_host}:{config.port}  (bind {config.host})")
     print(f"Data dir  : {config.data_dir}")
     n_files = len(list_pcd_files())
     print(f"PCD files : {n_files} found")
