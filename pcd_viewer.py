@@ -103,6 +103,16 @@ def main():
             print("\nStopping...")
         return
 
+    # pywebview native window is Windows-only; Linux uses browser mode
+    if sys.platform != 'win32':
+        print(f"Opening  {url}  in your browser...")
+        webbrowser.open(url)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\nStopping...")
+        return
+
     try:
         import webview  # type: ignore
 

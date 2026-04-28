@@ -14,14 +14,14 @@ block_cipher = None
 _icon = os.path.join('assets', 'icon.ico') if sys.platform == 'win32' \
     else os.path.join('assets', 'icon.png')
 
-# Collect all pywebview files (data, binaries, hidden imports)
-_wv_d, _wv_b, _wv_h = collect_all('webview')
-
-# Linux: collect gi (PyGObject) so pywebview GTK backend works in frozen binary
-if sys.platform != 'win32':
-    _gi_d, _gi_b, _gi_h = collect_all('gi')
+# Collect pywebview files — Windows only; Linux uses browser mode (no gi bundling)
+if sys.platform == 'win32':
+    _wv_d, _wv_b, _wv_h = collect_all('webview')
 else:
-    _gi_d, _gi_b, _gi_h = [], [], []
+    _wv_d, _wv_b, _wv_h = [], [], []
+
+# gi (PyGObject) not bundled — C extension cannot be reliably frozen
+_gi_d, _gi_b, _gi_h = [], [], []
 
 # Packages to exclude (pulled in transitively by numpy/pandas but unused here)
 EXCLUDES = [
@@ -74,9 +74,8 @@ a = Analysis(
         # Tell numpy hook NOT to include MKL/BLAS test/benchmark data
         'numpy': {'hiddenimports': [], 'excludedimports': ['numpy.core._multiarray_tests']},
     },
-    runtime_hooks=[
-        os.path.join('hooks', 'rthook_gi.py'),
-    ],
+    runtime_hooks=[],
+    # rthook_gi.py was removed — gi is no longer bundled on Linux
     excludes=EXCLUDES,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
