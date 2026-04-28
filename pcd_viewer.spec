@@ -17,6 +17,12 @@ _icon = os.path.join('assets', 'icon.ico') if sys.platform == 'win32' \
 # Collect all pywebview files (data, binaries, hidden imports)
 _wv_d, _wv_b, _wv_h = collect_all('webview')
 
+# Linux: collect gi (PyGObject) so pywebview GTK backend works in frozen binary
+if sys.platform != 'win32':
+    _gi_d, _gi_b, _gi_h = collect_all('gi')
+else:
+    _gi_d, _gi_b, _gi_h = [], [], []
+
 # Packages to exclude (pulled in transitively by numpy/pandas but unused here)
 EXCLUDES = [
     'matplotlib', 'mpl_toolkits',
@@ -49,11 +55,11 @@ if sys.platform == 'win32':
 a = Analysis(
     ['pcd_viewer.py'],
     pathex=['.'],
-    binaries=[] + _wv_b,
+    binaries=[] + _wv_b + _gi_b,
     datas=[
         (os.path.join('view', 'templates'), os.path.join('view', 'templates')),
         (os.path.join('view', 'static'),    os.path.join('view', 'static')),
-    ] + _wv_d,
+    ] + _wv_d + _gi_d,
     hiddenimports=[
         'numpy',
         'tkinter',
@@ -62,13 +68,15 @@ a = Analysis(
         'clr',
         'clr_loader',
         'pythonnet',
-    ] + _wv_h + collect_submodules('webview'),
-    hookspath=[],
+    ] + _wv_h + _gi_h + collect_submodules('webview'),
+    hookspath=['hooks'],
     hooksconfig={
         # Tell numpy hook NOT to include MKL/BLAS test/benchmark data
         'numpy': {'hiddenimports': [], 'excludedimports': ['numpy.core._multiarray_tests']},
     },
-    runtime_hooks=[],
+    runtime_hooks=[
+        os.path.join('hooks', 'rthook_gi.py'),
+    ],
     excludes=EXCLUDES,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

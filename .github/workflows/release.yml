@@ -45,7 +45,7 @@ jobs:
 
       # pip numpy has no MKL dependency — keeps binary small (~20 MB)
       - name: Install Python dependencies
-        run: pip install numpy pyinstaller pywebview pillow
+        run: pip install numpy pyinstaller pywebview pillow PyGObject
 
       - name: Generate app icon
         run: python assets/generate_icon.py
