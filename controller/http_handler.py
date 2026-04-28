@@ -307,6 +307,8 @@ class Handler(BaseHTTPRequestHandler):
             if picked:
                 picked = os.path.normpath(picked)
                 config.data_dir = os.path.dirname(picked)
+                from config import save_last_dir
+                save_last_dir(config.data_dir)
                 threading.Thread(target=_preload_all, daemon=True).start()
             self._json({'path': picked or '', 'data_dir': config.data_dir,
                         'fname': os.path.basename(picked) if picked else ''})
@@ -324,6 +326,8 @@ class Handler(BaseHTTPRequestHandler):
             root.destroy()
             if picked:
                 config.data_dir = os.path.normpath(picked)
+                from config import save_last_dir
+                save_last_dir(config.data_dir)
                 threading.Thread(target=_preload_all, daemon=True).start()
             self._json({'path': picked or '', 'data_dir': config.data_dir})
         except Exception as e:
@@ -335,6 +339,8 @@ class Handler(BaseHTTPRequestHandler):
         full   = os.path.realpath(target) if target else ''
         if full and os.path.isdir(full):
             config.data_dir = full
+            from config import save_last_dir
+            save_last_dir(config.data_dir)
             self._json({'ok': True, 'data_dir': config.data_dir})
         else:
             self._json({'ok': False, 'error': 'not a directory'})

@@ -1,7 +1,39 @@
 """Global mutable application configuration."""
 import os
 import sys
+import json
 import argparse
+
+
+def _state_path() -> str:
+    """Return path to the persistent state file (~/.config/pcd_viewer/state.json)."""
+    if sys.platform == 'win32':
+        base = os.environ.get('APPDATA', os.path.expanduser('~'))
+    else:
+        base = os.path.join(os.path.expanduser('~'), '.config')
+    return os.path.join(base, 'pcd_viewer', 'state.json')
+
+
+def save_last_dir(path: str) -> None:
+    """Persist the last-used data directory."""
+    try:
+        p = _state_path()
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, 'w', encoding='utf-8') as f:
+            json.dump({'last_dir': path}, f)
+    except Exception:
+        pass
+
+
+def _load_last_dir() -> str:
+    """Return the last-used directory, or '' if not saved."""
+    try:
+        with open(_state_path(), 'r', encoding='utf-8') as f:
+            d = json.load(f)
+        path = d.get('last_dir', '')
+        return path if path and os.path.isdir(path) else ''
+    except Exception:
+        return ''
 
 
 class _Config:
@@ -44,7 +76,10 @@ def init_from_args(argv):
                 pass
 
     if a.dir is None:
-        if getattr(sys, 'frozen', False):
+        last = _load_last_dir()
+        if last:
+            a.dir = last
+        elif getattr(sys, 'frozen', False):
             a.dir = os.path.dirname(os.path.abspath(sys.executable))
         else:
             a.dir = os.path.dirname(os.path.abspath(__file__))
