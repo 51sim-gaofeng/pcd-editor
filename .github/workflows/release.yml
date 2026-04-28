@@ -100,8 +100,68 @@ jobs:
           cd ..
           rm -rf staging
 
+      # ── Build .deb package (Linux only) ───────────────────────────────────
+      - name: Build .deb package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          PKG=pcd-viewer
+          VER=${{ github.ref_name }}
+          VER=${VER#v}          # strip leading 'v'
+          ARCH=amd64
+          DEB_ROOT=deb_build
+
+          # Standard Debian directory layout
+          install -d  ${DEB_ROOT}/DEBIAN
+          install -d  ${DEB_ROOT}/usr/local/bin
+          install -d  ${DEB_ROOT}/usr/share/applications
+          install -d  ${DEB_ROOT}/usr/share/doc/${PKG}
+
+          # Binary
+          install -m 755 dist/pcd_viewer ${DEB_ROOT}/usr/local/bin/pcd-viewer
+
+          # control file
+          cat > ${DEB_ROOT}/DEBIAN/control <<EOF
+          Package: ${PKG}
+          Version: ${VER}
+          Architecture: ${ARCH}
+          Maintainer: 51sim-gaofeng
+          Depends: libwebkit2gtk-4.0-dev | libwebkit2gtk-4.1-dev
+          Section: utils
+          Priority: optional
+          Description: 4DGS Lidar PCD Viewer
+           Web-based point cloud visualizer using Three.js.
+           Supports .pcd files with height/intensity coloring,
+           lasso selection, trajectory editing, and pywebview native window.
+          EOF
+
+          # postinst: clean up leading whitespace in control is already fine
+          # .desktop launcher
+          cat > ${DEB_ROOT}/usr/share/applications/pcd-viewer.desktop <<EOF
+          [Desktop Entry]
+          Name=PCD Viewer
+          Comment=4DGS Lidar Point Cloud Viewer
+          Exec=/usr/local/bin/pcd-viewer
+          Icon=utilities-terminal
+          Terminal=false
+          Type=Application
+          Categories=Science;Engineering;
+          EOF
+
+          # copyright
+          cat > ${DEB_ROOT}/usr/share/doc/${PKG}/copyright <<EOF
+          Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+          Upstream-Name: pcd-viewer
+          License: MIT
+          EOF
+
+          dpkg-deb --build --root-owner-group ${DEB_ROOT} \
+            dist/${PKG}_${VER}_${ARCH}.deb
+
+          echo "DEB_FILE=${PKG}_${VER}_${ARCH}.deb" >> $GITHUB_ENV
+
       # ── Upload to Release (both platforms write to the same release) ───────
-      - name: Upload to GitHub Release
+      - name: Upload to GitHub Release (Windows)
+        if: runner.os == 'Windows'
         uses: softprops/action-gh-release@v2
         with:
           name: "${{ github.ref_name }}"
@@ -109,3 +169,14 @@ jobs:
           files: |
             dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip
             dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip
+
+      - name: Upload to GitHub Release (Linux)
+        if: runner.os == 'Linux'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "${{ github.ref_name }}"
+          generate_release_notes: false
+          files: |
+            dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip
+            dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip
+            dist/${{ env.DEB_FILE }}
