@@ -108,6 +108,12 @@ jobs:
         if: runner.os == 'Linux'
         run: python assets/build_deb.py ${{ github.ref_name }} dist/pcd_viewer
 
+      # Rename raw binary so it has a version-stamped name for direct download
+      - name: Rename binary for direct download (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cp dist/pcd_viewer dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}
+
       # ── Upload to Release (both platforms write to the same release) ───────
       - name: Upload to GitHub Release (Windows)
         if: runner.os == 'Windows'
@@ -126,6 +132,7 @@ jobs:
           name: "${{ github.ref_name }}"
           generate_release_notes: false
           files: |
+            dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}
             dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip
             dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip
             dist/${{ env.DEB_FILE }}

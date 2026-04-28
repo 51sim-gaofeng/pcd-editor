@@ -57,11 +57,27 @@ def _wait_for_server(host: str, port: int, timeout: float = 10.0):
     return False
 
 
+def _find_free_port(preferred: int, host: str, max_tries: int = 20) -> int:
+    """Return preferred port if free, otherwise find the next available one."""
+    for offset in range(max_tries):
+        port = preferred + offset
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((host if host not in ('0.0.0.0', '::') else '127.0.0.1', port))
+            return port
+        except OSError:
+            continue
+    raise OSError(f"No free port found in range {preferred}-{preferred + max_tries - 1}")
+
+
 def main():
     init_from_args(sys.argv[1:])
-    # Bind only to localhost — pywebview opens the window directly, no need
-    # for external access. Honour explicit --ip override from the user.
     bind_host = config.host
+
+    # Auto-select a free port if the preferred one is already in use
+    config.port = _find_free_port(config.port, bind_host)
+
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((bind_host, config.port), Handler)
     server.daemon_threads = True
