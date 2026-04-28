@@ -437,6 +437,41 @@ function _floatsFromRawPoints(){
 }
 function replacePointCloud(pc){if(pointCloud){scene.remove(pointCloud);pointCloud.geometry.dispose();}pointCloud=pc;scene.add(pointCloud);}
 
+// ── DDS live fast-path: pre-allocated GPU buffers, no geometry recreate ────
+let _liveCloud=null,_livePosArr=null,_liveColArr=null,_liveCapN=0;
+function _ensureLiveCloud(n){
+  if(n<=_liveCapN&&_liveCloud)return;
+  const cap=n+65536; // 64k headroom
+  const posArr=new Float32Array(cap*3),colArr=new Float32Array(cap*3);
+  const posAttr=new THREE.BufferAttribute(posArr,3);posAttr.setUsage(THREE.DynamicDrawUsage);
+  const colAttr=new THREE.BufferAttribute(colArr,3);colAttr.setUsage(THREE.DynamicDrawUsage);
+  const geo=new THREE.BufferGeometry();geo.setAttribute('position',posAttr);geo.setAttribute('color',colAttr);
+  const mat=new THREE.PointsMaterial({size:ptSize*0.05,vertexColors:true,sizeAttenuation:true});
+  if(_liveCloud){scene.remove(_liveCloud);_liveCloud.geometry.dispose();_liveCloud.material.dispose();}
+  _liveCloud=new THREE.Points(geo,mat);scene.add(_liveCloud);
+  _livePosArr=posArr;_liveColArr=colArr;_liveCapN=cap;
+}
+function _updateLiveBuffers(floats,nfields,fields,mode){
+  const xi=fields.indexOf('x'),yi=fields.indexOf('y'),zi=fields.indexOf('z'),ii=fields.indexOf('intensity');
+  const np=(floats.length/nfields)|0;
+  _ensureLiveCloud(np);
+  const pos=_livePosArr,col=_liveColArr;
+  let zMn=Infinity,zMx=-Infinity,iMn=Infinity,iMx=-Infinity;
+  for(let i=0;i<np;i++){const b=i*nfields;const z=floats[b+zi];if(z<zMn)zMn=z;if(z>zMx)zMx=z;if(ii>=0){const iv=floats[b+ii];if(iv<iMn)iMn=iv;if(iv>iMx)iMx=iv;}}
+  if(mode==='height'&&_lockedZRange){zMn=_lockedZRange.mn;zMx=_lockedZRange.mx;}
+  const zR=zMx-zMn||1,iR=iMx-iMn||1;
+  for(let i=0;i<np;i++){
+    const b=i*nfields;
+    pos[i*3]=floats[b+xi]*flipX;pos[i*3+1]=floats[b+yi]*flipY;pos[i*3+2]=floats[b+zi]*flipZ;
+    let r,g,bl;if(mode==='height')[r,g,bl]=heightColor((floats[b+zi]-zMn)/zR);else if(mode==='intensity'&&ii>=0)[r,g,bl]=heightColor((floats[b+ii]-iMn)/iR);else{r=0.4;g=0.8;bl=1.0;}
+    col[i*3]=r;col[i*3+1]=g;col[i*3+2]=bl;
+  }
+  const geo=_liveCloud.geometry;
+  geo.getAttribute('position').needsUpdate=true;geo.getAttribute('color').needsUpdate=true;
+  geo.setDrawRange(0,np);
+  if(pointCloud)pointCloud.visible=false; // hide static cloud during live
+}
+
 function setLassoModeInternal(on){
   lassoMode=on;
   if(on){eraserMode=false;drawMode=false;pickMode=false;controls.enabled=false;lc.style.pointerEvents='auto';canvas.style.cursor='crosshair';document.getElementById('lasso-hint').style.display='block';['traj-hint','pick-hint','eraser-hint'].forEach(id=>document.getElementById(id).style.display='none');}
@@ -459,7 +494,7 @@ window._three={
     if(!_camInit){_camInit=true;}  // 保留首帧标记，但不再覆盖初始视角
   },
   resetCamInit(){_camInit=false;},
-  setPointSize(s){ptSize=s;if(pointCloud)pointCloud.material.size=s*0.05;if(selectionCloud)selectionCloud.material.size=s*0.08;},
+  setPointSize(s){ptSize=s;if(pointCloud)pointCloud.material.size=s*0.05;if(_liveCloud)_liveCloud.material.size=s*0.05;if(selectionCloud)selectionCloud.material.size=s*0.08;},
   setColorMode(m){colorMode=m;if(m!=='height')unlockZRange();if(rawFloats)replacePointCloud(buildPointCloud(rawFloats,rawNfields,rawFields,m,getFilt()));},
   setFlip(x,y,z){flipX=x;flipY=y;flipZ=z;if(!rawFloats)return;replacePointCloud(buildPointCloud(rawFloats,rawNfields,rawFields,colorMode,getFilt()));},
   resetCamera(){camera.position.set(...INIT_CAM_POS);camera.up.set(0,0,1);controls.target.set(...INIT_CAM_TARGET);controls.update();},
@@ -469,6 +504,17 @@ window._three={
   setEraserMode(on){setEraserModeInternal(on);},
   clearSelection(){clearSelectionInternal();},
   hasCloud(){return rawFloats&&rawFloats.length>0;},
+  // ── DDS live fast-path ────────────────────────────────────────────────
+  updateLive(floats,nfields,fields){
+    rawFloats=floats;rawNfields=nfields;rawFields=fields;rawPoints=null;
+    _updateLiveBuffers(floats,nfields,fields,colorMode);
+    if(!_camInit){_camInit=true;}
+  },
+  exitLiveMode(){
+    if(_liveCloud){scene.remove(_liveCloud);_liveCloud.geometry.dispose();_liveCloud.material.dispose();_liveCloud=null;_liveCapN=0;}
+    if(pointCloud)pointCloud.visible=true;
+  },
+  setLivePointSize(s){if(_liveCloud)_liveCloud.material.size=s*0.05;},
   deleteSelected(){if(!selectedIndices.size)return;_rawPointsFromFloats();undoBuffer={rawPoints:[...rawPoints],rawFields:[...rawFields],rawFloats:rawFloats.slice(),rawNfields};document.getElementById('edit-undo-btn').style.display='';const rawIdxs=displayedToRaw?[...selectedIndices].map(i=>displayedToRaw[i]):[...selectedIndices];rawIdxs.sort((a,b)=>b-a).forEach(i=>rawPoints.splice(i,1));_floatsFromRawPoints();clearSelectionInternal();replacePointCloud(buildPointCloud(rawFloats,rawNfields,rawFields,colorMode,getFilt()));},
   undoDelete(){if(!undoBuffer)return;rawPoints=undoBuffer.rawPoints;rawFields=undoBuffer.rawFields;rawFloats=undoBuffer.rawFloats;rawNfields=undoBuffer.rawNfields;undoBuffer=null;document.getElementById('edit-undo-btn').style.display='none';clearSelectionInternal();replacePointCloud(buildPointCloud(rawFloats,rawNfields,rawFields,colorMode,getFilt()));},
   getEditedPoints(){_rawPointsFromFloats();return rawPoints;},getFields(){return rawFields;},

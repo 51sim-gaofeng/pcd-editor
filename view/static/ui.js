@@ -168,9 +168,18 @@ document.addEventListener('keydown',function(e){
 // end playback
 // ── DDS Live mode ────────────────────────────────────────────────────────────
 let _ddsActive=false,_ddsTimer=null,_ddsLastId=-1,_ddsFps=10;
+// FPS meter
+let _ddsFpsCnt=0,_ddsFpsT0=performance.now();
+function _ddsFpsTick(){
+  _ddsFpsCnt++;
+  const now=performance.now(),dt=now-_ddsFpsT0;
+  if(dt>=1000){const fps=(_ddsFpsCnt*1000/dt).toFixed(1);_ddsFpsCnt=0;_ddsFpsT0=now;
+    const el=document.getElementById('dds-status');
+    if(el&&_ddsActive)el.textContent=(el.textContent.split('·')[0]||'').trim()+' · '+fps+' fps';}
+}
 function ddsToggle(){
   if(_ddsActive){ddsStop();return;}
-  _ddsActive=true;_ddsLastId=-1;
+  _ddsActive=true;_ddsLastId=-1;_ddsFpsCnt=0;_ddsFpsT0=performance.now();
   _stopPlay(); // stop file playback
   document.getElementById('btn-dds').innerHTML='&#x23F9; DDS Stop';
   document.getElementById('btn-dds').style.background='#dc2626';
@@ -182,6 +191,7 @@ function ddsToggle(){
 function ddsStop(){
   _ddsActive=false;
   if(_ddsTimer){clearTimeout(_ddsTimer);_ddsTimer=null;}
+  if(window._three&&window._three.exitLiveMode)window._three.exitLiveMode();
   document.getElementById('btn-dds').innerHTML='&#x1F4E1; DDS Live';
   document.getElementById('btn-dds').style.background='';
   document.getElementById('dds-status').textContent='off';
@@ -190,7 +200,6 @@ function ddsStop(){
 }
 async function _ddsLoopStep(){
   if(!_ddsActive)return;
-  const t0=performance.now();
   try{
     const resp=await fetch('/api/dds_frame?after='+_ddsLastId);
     if(!_ddsActive)return;
@@ -200,8 +209,11 @@ async function _ddsLoopStep(){
       _ddsLastId=fid;
       const buf=await resp.arrayBuffer();
       const{fields,npoints,nfields,floats}=_parsePcdBuf(buf);
-      window._three.loadPoints(floats,nfields,fields);
+      // fast-path: reuse pre-allocated GPU buffers
+      if(window._three.updateLive){window._three.updateLive(floats,nfields,fields);}
+      else{window._three.loadPoints(floats,nfields,fields);}
       if(npoints>0)_applyZRange(floats,nfields,fields);
+      _ddsFpsTick();
       document.getElementById('dds-status').textContent='frame '+fid+' \u00b7 '+npoints.toLocaleString()+' pts';
       document.getElementById('dds-status').style.color='#34d399';
       document.getElementById('info').textContent=npoints.toLocaleString()+' pts  \u00b7  DDS Live #'+fid;
@@ -218,8 +230,8 @@ async function _ddsLoopStep(){
     document.getElementById('dds-status').textContent='error';
     document.getElementById('dds-status').style.color='#f87171';
   }
-  const elapsed=performance.now()-t0;
-  if(_ddsActive)_ddsTimer=setTimeout(_ddsLoopStep,Math.max(0,1000/_ddsFps-elapsed));
+  // poll as fast as possible — no artificial throttle
+  if(_ddsActive)_ddsTimer=setTimeout(_ddsLoopStep,0);
 }
 // end DDS live
 function setStatus(m,c){
