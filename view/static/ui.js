@@ -166,6 +166,62 @@ document.addEventListener('keydown',function(e){
   else if(e.key===' '){playToggle();e.preventDefault();}
 });
 // end playback
+// ── DDS Live mode ────────────────────────────────────────────────────────────
+let _ddsActive=false,_ddsTimer=null,_ddsLastId=-1,_ddsFps=10;
+function ddsToggle(){
+  if(_ddsActive){ddsStop();return;}
+  _ddsActive=true;_ddsLastId=-1;
+  _stopPlay(); // stop file playback
+  document.getElementById('btn-dds').innerHTML='&#x23F9; DDS Stop';
+  document.getElementById('btn-dds').style.background='#dc2626';
+  document.getElementById('dds-status').textContent='connecting\u2026';
+  document.getElementById('dds-status').style.color='#facc15';
+  setStatus('DDS Live: waiting for frames\u2026','loading');
+  _ddsLoopStep();
+}
+function ddsStop(){
+  _ddsActive=false;
+  if(_ddsTimer){clearTimeout(_ddsTimer);_ddsTimer=null;}
+  document.getElementById('btn-dds').innerHTML='&#x1F4E1; DDS Live';
+  document.getElementById('btn-dds').style.background='';
+  document.getElementById('dds-status').textContent='off';
+  document.getElementById('dds-status').style.color='#475569';
+  setStatus('DDS stopped','ok');
+}
+async function _ddsLoopStep(){
+  if(!_ddsActive)return;
+  const t0=performance.now();
+  try{
+    const resp=await fetch('/api/dds_frame?after='+_ddsLastId);
+    if(!_ddsActive)return;
+    const ct=resp.headers.get('Content-Type')||'';
+    if(ct.includes('octet-stream')){
+      const fid=parseInt(resp.headers.get('X-Frame-Id'))||0;
+      _ddsLastId=fid;
+      const buf=await resp.arrayBuffer();
+      const{fields,npoints,nfields,floats}=_parsePcdBuf(buf);
+      window._three.loadPoints(floats,nfields,fields);
+      if(npoints>0)_applyZRange(floats,nfields,fields);
+      document.getElementById('dds-status').textContent='frame '+fid+' \u00b7 '+npoints.toLocaleString()+' pts';
+      document.getElementById('dds-status').style.color='#34d399';
+      document.getElementById('info').textContent=npoints.toLocaleString()+' pts  \u00b7  DDS Live #'+fid;
+      setStatus('DDS Live #'+fid,'ok');
+    }else{
+      const j=await resp.json();
+      if(j.frame_id<0){
+        document.getElementById('dds-status').textContent='no signal';
+        document.getElementById('dds-status').style.color='#f87171';
+      }
+    }
+  }catch(e){
+    if(!_ddsActive)return;
+    document.getElementById('dds-status').textContent='error';
+    document.getElementById('dds-status').style.color='#f87171';
+  }
+  const elapsed=performance.now()-t0;
+  if(_ddsActive)_ddsTimer=setTimeout(_ddsLoopStep,Math.max(0,1000/_ddsFps-elapsed));
+}
+// end DDS live
 function setStatus(m,c){
   const e=document.getElementById('status');e.textContent=m;e.className=c||'';
   // 同时把状态消息打到 log 面板（去掉空消息和"loading"占位避免刷屏）

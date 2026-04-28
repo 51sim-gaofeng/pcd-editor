@@ -40,6 +40,7 @@ if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
 
 from config import config, init_from_args
 from controller.http_handler import Handler
+from model.dds_model import start_udp_listener
 from model.file_model import _preload_all, list_pcd_files
 
 
@@ -91,6 +92,9 @@ def main():
     if n_files > 0:
         threading.Thread(target=_preload_all, daemon=True).start()
         print(f"Preloading {n_files} files in background...")
+
+    # ── Start DDS UDP listener ─────────────────────────────────────────────
+    start_udp_listener(config.udp_port)
 
     # ── Try to open a native window via pywebview ──────────────────────────
     if config.no_window:

@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
 import view
+from model.dds_model import get_latest_frame, get_status as dds_get_status
 from model.file_model import _preload_all, list_pcd_files
 from model.pcd_model import get_pcd_binary_cached, parse_pcd, save_pcd
 from model.trajectory_model import (
@@ -161,6 +162,12 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == '/api/set_dir':
             self._handle_set_dir(params)
+
+        elif path == '/api/dds_frame':
+            self._handle_dds_frame(params)
+
+        elif path == '/api/dds_status':
+            self._json(dds_get_status())
 
         elif path == '/api/open_in_explorer':
             self._handle_open_explorer(params)
@@ -358,3 +365,25 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({'ok': False, 'error': 'not a directory'})
         except Exception as e:
             self._json({'ok': False, 'error': str(e)})
+
+    def _handle_dds_frame(self, params):
+        """Return the latest DDS live frame if newer than after_id, else JSON {frame_id, changed}."""
+        try:
+            after_id = int(params.get('after', ['-1'])[0])
+        except (ValueError, IndexError):
+            after_id = -1
+        fid, payload = get_latest_frame(after_id)
+        if payload is None:
+            # No new frame available
+            self._json({'frame_id': fid, 'changed': False})
+            return
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('X-Frame-Id', str(fid))
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+            pass
+
