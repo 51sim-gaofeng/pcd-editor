@@ -10,6 +10,10 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
 
+# App icon (embedded at build time)
+_icon = os.path.join('assets', 'icon.ico') if sys.platform == 'win32' \
+    else os.path.join('assets', 'icon.png')
+
 # Collect all pywebview files (data, binaries, hidden imports)
 _wv_d, _wv_b, _wv_h = collect_all('webview')
 
@@ -107,6 +111,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=_icon,
     onefile=True,
 )

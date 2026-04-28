@@ -45,7 +45,10 @@ jobs:
 
       # pip numpy has no MKL dependency — keeps binary small (~20 MB)
       - name: Install Python dependencies
-        run: pip install numpy pyinstaller pywebview
+        run: pip install numpy pyinstaller pywebview pillow
+
+      - name: Generate app icon
+        run: python assets/generate_icon.py
 
       - name: Build binary
         run: python -m PyInstaller pcd_viewer.spec --clean --noconfirm
@@ -114,45 +117,67 @@ jobs:
           install -d  ${DEB_ROOT}/DEBIAN
           install -d  ${DEB_ROOT}/usr/local/bin
           install -d  ${DEB_ROOT}/usr/share/applications
+          install -d  ${DEB_ROOT}/usr/share/pixmaps
           install -d  ${DEB_ROOT}/usr/share/doc/${PKG}
 
           # Binary
           install -m 755 dist/pcd_viewer ${DEB_ROOT}/usr/local/bin/pcd-viewer
 
-          # control file
-          cat > ${DEB_ROOT}/DEBIAN/control <<EOF
-          Package: ${PKG}
-          Version: ${VER}
-          Architecture: ${ARCH}
-          Maintainer: 51sim-gaofeng
-          Depends: libwebkit2gtk-4.0-dev | libwebkit2gtk-4.1-dev
-          Section: utils
-          Priority: optional
-          Description: 4DGS Lidar PCD Viewer
-           Web-based point cloud visualizer using Three.js.
-           Supports .pcd files with height/intensity coloring,
-           lasso selection, trajectory editing, and pywebview native window.
-          EOF
+          # App icon
+          install -m 644 assets/icon.png ${DEB_ROOT}/usr/share/pixmaps/pcd-viewer.png
 
-          # postinst: clean up leading whitespace in control is already fine
+          # control file (runtime deps: libwebkit2gtk-4.0-37 on 22.04, 4.1-0 on 24.04)
+          cat > ${DEB_ROOT}/DEBIAN/control << 'CTRL'
+Package: pcd-viewer
+Version: VER_PLACEHOLDER
+Architecture: amd64
+Maintainer: 51sim-gaofeng
+Depends: libgtk-3-0, libwebkit2gtk-4.0-37 | libwebkit2gtk-4.1-0
+Section: utils
+Priority: optional
+Description: 4DGS Lidar PCD Viewer
+ Web-based point cloud visualizer using Three.js.
+ Supports .pcd files with height/intensity coloring,
+ lasso selection, trajectory editing, and pywebview native window.
+CTRL
+          sed -i "s/VER_PLACEHOLDER/${VER}/" ${DEB_ROOT}/DEBIAN/control
+
+          # postinst: auto-install runtime deps when using dpkg -i
+          cat > ${DEB_ROOT}/DEBIAN/postinst << 'POSTINST'
+#!/bin/sh
+set -e
+case "$1" in
+  configure)
+    if command -v apt-get > /dev/null 2>&1; then
+      apt-get install -y --no-install-recommends \
+        libgtk-3-0 libwebkit2gtk-4.0-37 2>/dev/null || \
+      apt-get install -y --no-install-recommends \
+        libgtk-3-0 libwebkit2gtk-4.1-0 2>/dev/null || true
+    fi
+    ;;
+esac
+exit 0
+POSTINST
+          chmod 755 ${DEB_ROOT}/DEBIAN/postinst
+
           # .desktop launcher
-          cat > ${DEB_ROOT}/usr/share/applications/pcd-viewer.desktop <<EOF
-          [Desktop Entry]
-          Name=PCD Viewer
-          Comment=4DGS Lidar Point Cloud Viewer
-          Exec=/usr/local/bin/pcd-viewer
-          Icon=utilities-terminal
-          Terminal=false
-          Type=Application
-          Categories=Science;Engineering;
-          EOF
+          cat > ${DEB_ROOT}/usr/share/applications/pcd-viewer.desktop << 'DESK'
+[Desktop Entry]
+Name=PCD Viewer
+Comment=4DGS Lidar Point Cloud Viewer
+Exec=/usr/local/bin/pcd-viewer
+Icon=pcd-viewer
+Terminal=false
+Type=Application
+Categories=Science;Engineering;
+DESK
 
           # copyright
-          cat > ${DEB_ROOT}/usr/share/doc/${PKG}/copyright <<EOF
-          Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-          Upstream-Name: pcd-viewer
-          License: MIT
-          EOF
+          cat > ${DEB_ROOT}/usr/share/doc/${PKG}/copyright << 'CPR'
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: pcd-viewer
+License: MIT
+CPR
 
           dpkg-deb --build --root-owner-group ${DEB_ROOT} \
             dist/${PKG}_${VER}_${ARCH}.deb
