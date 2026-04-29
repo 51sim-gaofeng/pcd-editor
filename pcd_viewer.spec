@@ -20,6 +20,8 @@ if sys.platform == 'win32':
 else:
     _wv_d, _wv_b, _wv_h = [], [], []
 
+_ws_d, _ws_b, _ws_h = collect_all('websockets')
+
 # gi (PyGObject) not bundled — C extension cannot be reliably frozen
 _gi_d, _gi_b, _gi_h = [], [], []
 
@@ -55,11 +57,11 @@ if sys.platform == 'win32':
 a = Analysis(
     ['pcd_viewer.py'],
     pathex=['.'],
-    binaries=[] + _wv_b + _gi_b,
+    binaries=[] + _wv_b + _gi_b + _ws_b,
     datas=[
         (os.path.join('view', 'templates'), os.path.join('view', 'templates')),
         (os.path.join('view', 'static'),    os.path.join('view', 'static')),
-    ] + _wv_d + _gi_d,
+    ] + _wv_d + _gi_d + _ws_d,
     hiddenimports=[
         'numpy',
         'tkinter',
@@ -68,7 +70,7 @@ a = Analysis(
         'clr',
         'clr_loader',
         'pythonnet',
-    ] + _wv_h + _gi_h + collect_submodules('webview'),
+    ] + _wv_h + _gi_h + _ws_h + collect_submodules('webview'),
     hookspath=['hooks'],
     hooksconfig={
         # Tell numpy hook NOT to include MKL/BLAS test/benchmark data

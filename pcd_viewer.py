@@ -40,7 +40,7 @@ if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
 
 from config import config, init_from_args
 from controller.http_handler import Handler
-from model.dds_model import start_udp_listener
+from model.dds_model import start_udp_listener, start_ws_server  # noqa: F401  (kept for backward import compatibility)
 from model.file_model import _preload_all, list_pcd_files
 
 
@@ -93,8 +93,9 @@ def main():
         threading.Thread(target=_preload_all, daemon=True).start()
         print(f"Preloading {n_files} files in background...")
 
-    # ── Start DDS UDP listener ─────────────────────────────────────────────
-    start_udp_listener(config.udp_port)
+    # ── DDS UDP/WS not started here; user starts via "DDS Live" button ─────
+    config.dds_ws_port = _find_free_port(config.dds_ws_port, bind_host)
+    print(f'DDS WS    : ws://{_disp_host}:{config.dds_ws_port}  (lazy: starts on demand)')
 
     # ── Try to open a native window via pywebview ──────────────────────────
     if config.no_window:
@@ -135,6 +136,7 @@ def main():
             height=900,
             resizable=True,
             min_size=(800, 600),
+            text_select=True,
         )
         webview.start()          # blocks until window is closed
         server.shutdown()

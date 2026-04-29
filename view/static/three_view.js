@@ -45,17 +45,125 @@ controls.enableDamping=true;controls.dampingFactor=0.08;controls.screenSpacePann
   const originMat=new THREE.MeshBasicMaterial({color:0xffffff});
   scene.add(new THREE.Mesh(originGeo,originMat));
 })();
-let grid=null;
-function rebuildGrid(size,divisions){
-  if(grid){scene.remove(grid);grid.geometry.dispose();grid.material.dispose();}
-  grid=new THREE.GridHelper(size,divisions,0x1e2235,0x1e2235);
-  grid.rotation.x=Math.PI/2;
-  scene.add(grid);
+let grid=null,gridStyle='square',gridLabels=null;
+let _LABEL_STEP=10; // meters between coordinate labels (configurable via _grid.setLabelStep)
+
+function _disposeNode(obj){
+  if(!obj)return;
+  obj.traverse(c=>{
+    if(c.geometry)c.geometry.dispose();
+    if(c.material){
+      if(Array.isArray(c.material))c.material.forEach(m=>{if(m.map)m.map.dispose();m.dispose();});
+      else{if(c.material.map)c.material.map.dispose();c.material.dispose();}
+    }
+  });
 }
+
+function _makeLabelSprite(text,color){
+  const dpr=Math.min(2,window.devicePixelRatio||1);
+  const fontPx=14;
+  const padX=6,padY=2;
+  const cv=document.createElement('canvas');
+  const ctx=cv.getContext('2d');
+  ctx.font=`600 ${fontPx}px ui-monospace,Menlo,Consolas,monospace`;
+  const tw=Math.ceil(ctx.measureText(text).width);
+  cv.width=(tw+padX*2)*dpr;
+  cv.height=(fontPx+padY*2)*dpr;
+  ctx.scale(dpr,dpr);
+  ctx.font=`600 ${fontPx}px ui-monospace,Menlo,Consolas,monospace`;
+  ctx.clearRect(0,0,tw+padX*2,fontPx+padY*2);
+  ctx.fillStyle=color||'#94a3b8';
+  ctx.textBaseline='top';
+  ctx.fillText(text,padX,padY);
+  const tex=new THREE.CanvasTexture(cv);
+  tex.minFilter=THREE.LinearFilter;tex.magFilter=THREE.LinearFilter;tex.needsUpdate=true;
+  const mat=new THREE.SpriteMaterial({map:tex,depthTest:false,depthWrite:false,transparent:true});
+  const sp=new THREE.Sprite(mat);
+  // Constant on-screen size: 0.04 unit ~ readable at default zoom; tunable.
+  const w=(tw+padX*2),h=(fontPx+padY*2);
+  const s=0.04;
+  sp.scale.set(w*s,h*s,1);
+  sp.renderOrder=999;
+  return sp;
+}
+
+function _buildSquareGrid(size,divisions,colorMain,colorSub){
+  const g=new THREE.GridHelper(size,divisions,colorMain,colorSub);
+  g.rotation.x=Math.PI/2;
+  return g;
+}
+
+function _buildCircleGrid(radius,step,colorMain,colorSub){
+  // Concentric rings + radial spokes (every 30°).
+  const grp=new THREE.Group();
+  const segs=128;
+  const ringMatMain=new THREE.LineBasicMaterial({color:colorMain,transparent:true,opacity:0.85});
+  const ringMatSub=new THREE.LineBasicMaterial({color:colorSub,transparent:true,opacity:0.55});
+  const nRings=Math.max(1,Math.round(radius/step));
+  for(let i=1;i<=nRings;i++){
+    const r=i*step;
+    const pts=[];
+    for(let k=0;k<=segs;k++){
+      const a=(k/segs)*Math.PI*2;
+      pts.push(new THREE.Vector3(Math.cos(a)*r,Math.sin(a)*r,0));
+    }
+    const geo=new THREE.BufferGeometry().setFromPoints(pts);
+    // Highlight every label-step ring as "main".
+    const isMain=(Math.abs(r%_LABEL_STEP)<1e-6)||(i===nRings);
+    grp.add(new THREE.LineLoop(geo,isMain?ringMatMain:ringMatSub));
+  }
+  // Radial spokes every 30°.
+  const spokeMat=new THREE.LineBasicMaterial({color:colorSub,transparent:true,opacity:0.5});
+  for(let deg=0;deg<360;deg+=30){
+    const a=deg*Math.PI/180;
+    const geo=new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0,0,0),
+      new THREE.Vector3(Math.cos(a)*radius,Math.sin(a)*radius,0),
+    ]);
+    grp.add(new THREE.Line(geo,spokeMat));
+  }
+  return grp;
+}
+
+function _buildAxisLabels(extent){
+  // Place +X / -X / +Y / -Y labels every _LABEL_STEP meters out to ±extent.
+  const grp=new THREE.Group();
+  const colX='#fca5a5';   // x: warm
+  const colY='#86efac';   // y: cool-green
+  const maxN=Math.floor(extent/_LABEL_STEP);
+  for(let i=1;i<=maxN;i++){
+    const d=i*_LABEL_STEP;
+    const sp1=_makeLabelSprite(`+${d}`,colX);sp1.position.set(d,0,0);grp.add(sp1);
+    const sp2=_makeLabelSprite(`-${d}`,colX);sp2.position.set(-d,0,0);grp.add(sp2);
+    const sp3=_makeLabelSprite(`+${d}`,colY);sp3.position.set(0,d,0);grp.add(sp3);
+    const sp4=_makeLabelSprite(`-${d}`,colY);sp4.position.set(0,-d,0);grp.add(sp4);
+  }
+  return grp;
+}
+
+function rebuildGrid(size,divisions){
+  if(grid){scene.remove(grid);_disposeNode(grid);grid=null;}
+  if(gridLabels){scene.remove(gridLabels);_disposeNode(gridLabels);gridLabels=null;}
+  if(gridStyle==='circle'){
+    const step=Math.max(0.1,size/Math.max(1,divisions));
+    const radius=size/2;
+    grid=_buildCircleGrid(radius,step,0x334155,0x1e2235);
+  }else{
+    grid=_buildSquareGrid(size,divisions,0x334155,0x1e2235);
+  }
+  scene.add(grid);
+  gridLabels=_buildAxisLabels(size/2);
+  scene.add(gridLabels);
+}
+
 rebuildGrid(200,200);
 window._grid={
   setSize(s,d){rebuildGrid(s,d);},
-  setVisible(v){if(grid)grid.visible=!!v;},
+  setVisible(v){if(grid)grid.visible=!!v;if(gridLabels)gridLabels.visible=!!v;},
+  setStyle(style){gridStyle=(style==='circle')?'circle':'square';},
+  getStyle(){return gridStyle;},
+  setLabelStep(step){const s=Math.max(0.1,parseFloat(step)||20);_LABEL_STEP=s;},
+  getLabelStep(){return _LABEL_STEP;},
 };
 const wrap=document.getElementById('canvas-wrap');
 const lc=document.getElementById('lasso-canvas');
@@ -173,7 +281,19 @@ function _flyTick(){
   if(u)camera.position.z+=u*spd;
 }
 
-function animate(){requestAnimationFrame(animate);_flyTick();if(!_freeMode)controls.update();renderer.render(scene,camera);}
+// Rolling stats for renderer.render() — exposed so DDS heartbeat can show GPU cost.
+let _renderMsEwma=0,_renderCount=0;
+function animate(){
+  requestAnimationFrame(animate);
+  _flyTick();
+  if(!_freeMode)controls.update();
+  const t0=performance.now();
+  renderer.render(scene,camera);
+  const dt=performance.now()-t0;
+  _renderMsEwma=_renderMsEwma>0?(_renderMsEwma*0.9+dt*0.1):dt;
+  _renderCount++;
+  window._renderStats={ewmaMs:_renderMsEwma,count:_renderCount};
+}
 animate();
 
 let pointCloud=null,rawPoints=[],rawFields=[],ptSize=1.5,colorMode='height';
@@ -439,6 +559,26 @@ function replacePointCloud(pc){if(pointCloud){scene.remove(pointCloud);pointClou
 
 // ── DDS live fast-path: pre-allocated GPU buffers, no geometry recreate ────
 let _liveCloud=null,_livePosArr=null,_liveColArr=null,_liveCapN=0;
+// Carry color range across frames so the per-frame loop is single-pass.
+// First frame still scans; subsequent frames color with the previous frame's
+// range, then the loop also accumulates fresh min/max for the next frame.
+let _liveLastZMn=Infinity,_liveLastZMx=-Infinity,_liveLastIMn=Infinity,_liveLastIMx=-Infinity;
+// 1024-entry LUT for heightColor — replaces 5-stop interpolation per point.
+const _LUT_SIZE=1024;
+const _liveColorLUT=(function(){
+  const lut=new Float32Array(_LUT_SIZE*3);
+  const stops=[[0.1,0.1,0.8],[0.0,0.8,0.8],[0.0,0.9,0.1],[0.9,0.9,0.0],[0.9,0.1,0.1]];
+  const segs=stops.length-1;
+  for(let k=0;k<_LUT_SIZE;k++){
+    const s=(k/(_LUT_SIZE-1))*segs;
+    const lo=Math.min(segs-1,Math.floor(s));
+    const f=s-lo;const a=stops[lo],b=stops[lo+1];
+    lut[k*3  ]=a[0]+(b[0]-a[0])*f;
+    lut[k*3+1]=a[1]+(b[1]-a[1])*f;
+    lut[k*3+2]=a[2]+(b[2]-a[2])*f;
+  }
+  return lut;
+})();
 function _ensureLiveCloud(n){
   if(n<=_liveCapN&&_liveCloud)return;
   const cap=n+65536; // 64k headroom
@@ -446,30 +586,104 @@ function _ensureLiveCloud(n){
   const posAttr=new THREE.BufferAttribute(posArr,3);posAttr.setUsage(THREE.DynamicDrawUsage);
   const colAttr=new THREE.BufferAttribute(colArr,3);colAttr.setUsage(THREE.DynamicDrawUsage);
   const geo=new THREE.BufferGeometry();geo.setAttribute('position',posAttr);geo.setAttribute('color',colAttr);
+  // Skip Three.js's per-frame computeBoundingSphere (which would scan all N points
+  // every render). Live cloud is always in-view from the user's perspective; pre-set
+  // a giant sphere and disable frustum culling instead.
+  geo.boundingSphere=new THREE.Sphere(new THREE.Vector3(0,0,0),1e9);
   const mat=new THREE.PointsMaterial({size:ptSize*0.05,vertexColors:true,sizeAttenuation:true});
   if(_liveCloud){scene.remove(_liveCloud);_liveCloud.geometry.dispose();_liveCloud.material.dispose();}
-  _liveCloud=new THREE.Points(geo,mat);scene.add(_liveCloud);
+  _liveCloud=new THREE.Points(geo,mat);
+  _liveCloud.frustumCulled=false;
+  _liveCloud.matrixAutoUpdate=false;
+  scene.add(_liveCloud);
   _livePosArr=posArr;_liveColArr=colArr;_liveCapN=cap;
 }
 function _updateLiveBuffers(floats,nfields,fields,mode){
+  const tStart=performance.now();
   const xi=fields.indexOf('x'),yi=fields.indexOf('y'),zi=fields.indexOf('z'),ii=fields.indexOf('intensity');
   const np=(floats.length/nfields)|0;
   _ensureLiveCloud(np);
-  const pos=_livePosArr,col=_liveColArr;
-  let zMn=Infinity,zMx=-Infinity,iMn=Infinity,iMx=-Infinity;
-  for(let i=0;i<np;i++){const b=i*nfields;const z=floats[b+zi];if(z<zMn)zMn=z;if(z>zMx)zMx=z;if(ii>=0){const iv=floats[b+ii];if(iv<iMn)iMn=iv;if(iv>iMx)iMx=iv;}}
-  if(mode==='height'&&_lockedZRange){zMn=_lockedZRange.mn;zMx=_lockedZRange.mx;}
-  const zR=zMx-zMn||1,iR=iMx-iMn||1;
-  for(let i=0;i<np;i++){
-    const b=i*nfields;
-    pos[i*3]=floats[b+xi]*flipX;pos[i*3+1]=floats[b+yi]*flipY;pos[i*3+2]=floats[b+zi]*flipZ;
-    let r,g,bl;if(mode==='height')[r,g,bl]=heightColor((floats[b+zi]-zMn)/zR);else if(mode==='intensity'&&ii>=0)[r,g,bl]=heightColor((floats[b+ii]-iMn)/iR);else{r=0.4;g=0.8;bl=1.0;}
-    col[i*3]=r;col[i*3+1]=g;col[i*3+2]=bl;
+  const tEnsured=performance.now();
+  const pos=_livePosArr,col=_liveColArr,lut=_liveColorLUT;
+  const fx=flipX,fy=flipY,fz=flipZ;
+  const lutMax=_LUT_SIZE-1;
+  // Color range used THIS frame (prefer locked range; else last frame's range; else scan).
+  let useZMn,useZMx,useIMn,useIMx;
+  let needFirstScan=false;
+  if(mode==='height'&&_lockedZRange){
+    useZMn=_lockedZRange.mn;useZMx=_lockedZRange.mx;
+  }else if(_liveLastZMn<_liveLastZMx){
+    useZMn=_liveLastZMn;useZMx=_liveLastZMx;
+  }else{
+    needFirstScan=true;
+  }
+  if(_liveLastIMn<_liveLastIMx){
+    useIMn=_liveLastIMn;useIMx=_liveLastIMx;
+  }else{
+    needFirstScan=needFirstScan||(mode==='intensity'&&ii>=0);
+  }
+  if(needFirstScan){
+    let zMn=Infinity,zMx=-Infinity,iMn=Infinity,iMx=-Infinity;
+    for(let i=0;i<np;i++){
+      const b=i*nfields;const z=floats[b+zi];
+      if(z<zMn)zMn=z;if(z>zMx)zMx=z;
+      if(ii>=0){const iv=floats[b+ii];if(iv<iMn)iMn=iv;if(iv>iMx)iMx=iv;}
+    }
+    if(useZMn===undefined){useZMn=zMn;useZMx=zMx;}
+    if(useIMn===undefined){useIMn=iMn;useIMx=iMx;}
+    _liveLastZMn=zMn;_liveLastZMx=zMx;_liveLastIMn=iMn;_liveLastIMx=iMx;
+  }
+  const zR=(useZMx-useZMn)||1,iR=(useIMx-useIMn)||1;
+  const invZ=lutMax/zR,invI=lutMax/iR;
+  // Single-pass: write pos+col, accumulate next-frame z/i range.
+  let nzMn=Infinity,nzMx=-Infinity,niMn=Infinity,niMx=-Infinity;
+  if(mode==='height'){
+    for(let i=0;i<np;i++){
+      const b=i*nfields;const x=floats[b+xi],y=floats[b+yi],z=floats[b+zi];
+      const o=i*3;pos[o]=x*fx;pos[o+1]=y*fy;pos[o+2]=z*fz;
+      if(z<nzMn)nzMn=z;if(z>nzMx)nzMx=z;
+      let t=(z-useZMn)*invZ;if(t<0)t=0;else if(t>lutMax)t=lutMax;
+      const k=t|0;const lo=k*3;
+      col[o]=lut[lo];col[o+1]=lut[lo+1];col[o+2]=lut[lo+2];
+    }
+  }else if(mode==='intensity'&&ii>=0){
+    for(let i=0;i<np;i++){
+      const b=i*nfields;const x=floats[b+xi],y=floats[b+yi],z=floats[b+zi],iv=floats[b+ii];
+      const o=i*3;pos[o]=x*fx;pos[o+1]=y*fy;pos[o+2]=z*fz;
+      if(z<nzMn)nzMn=z;if(z>nzMx)nzMx=z;
+      if(iv<niMn)niMn=iv;if(iv>niMx)niMx=iv;
+      let t=(iv-useIMn)*invI;if(t<0)t=0;else if(t>lutMax)t=lutMax;
+      const k=t|0;const lo=k*3;
+      col[o]=lut[lo];col[o+1]=lut[lo+1];col[o+2]=lut[lo+2];
+    }
+  }else{
+    // Solid color path — no LUT lookup, no min/max for color, but still track z/i for next frame.
+    for(let i=0;i<np;i++){
+      const b=i*nfields;const x=floats[b+xi],y=floats[b+yi],z=floats[b+zi];
+      const o=i*3;pos[o]=x*fx;pos[o+1]=y*fy;pos[o+2]=z*fz;
+      if(z<nzMn)nzMn=z;if(z>nzMx)nzMx=z;
+      if(ii>=0){const iv=floats[b+ii];if(iv<niMn)niMn=iv;if(iv>niMx)niMx=iv;}
+      col[o]=0.4;col[o+1]=0.8;col[o+2]=1.0;
+    }
+  }
+  if(np>0){
+    if(nzMn<nzMx){_liveLastZMn=nzMn;_liveLastZMx=nzMx;}
+    if(niMn<niMx){_liveLastIMn=niMn;_liveLastIMx=niMx;}
   }
   const geo=_liveCloud.geometry;
+  const tLoop=performance.now();
   geo.getAttribute('position').needsUpdate=true;geo.getAttribute('color').needsUpdate=true;
   geo.setDrawRange(0,np);
   if(pointCloud)pointCloud.visible=false; // hide static cloud during live
+  const tEnd=performance.now();
+  // Expose breakdown so the UI heartbeat can see where the time goes.
+  window._liveLastTimings={
+    np,
+    ensureMs: tEnsured-tStart,
+    loopMs: tLoop-tEnsured,
+    flushMs: tEnd-tLoop,
+    totalMs: tEnd-tStart,
+  };
 }
 
 function setLassoModeInternal(on){
@@ -512,6 +726,7 @@ window._three={
   },
   exitLiveMode(){
     if(_liveCloud){scene.remove(_liveCloud);_liveCloud.geometry.dispose();_liveCloud.material.dispose();_liveCloud=null;_liveCapN=0;}
+    _liveLastZMn=Infinity;_liveLastZMx=-Infinity;_liveLastIMn=Infinity;_liveLastIMx=-Infinity;
     if(pointCloud)pointCloud.visible=true;
   },
   setLivePointSize(s){if(_liveCloud)_liveCloud.material.size=s*0.05;},

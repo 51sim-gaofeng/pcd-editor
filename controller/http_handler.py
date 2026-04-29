@@ -7,7 +7,16 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
 import view
-from model.dds_model import get_latest_frame, get_status as dds_get_status
+from model.dds_model import (
+    ensure_dds_started,
+    get_latest_frame,
+    get_latest_frame_blocking,
+    get_receiver_config as dds_get_receiver_config,
+    get_stream_config as dds_get_stream_config,
+    get_status as dds_get_status,
+    rebind_udp_listener,
+    set_max_live_points,
+)
 from model.file_model import _preload_all, list_pcd_files
 from model.pcd_model import get_pcd_binary_cached, parse_pcd, save_pcd
 from model.trajectory_model import (
@@ -168,6 +177,38 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == '/api/dds_status':
             self._json(dds_get_status())
+
+        elif path == '/api/dds_ensure':
+            try:
+                from config import config as _cfg
+                bind_host = _cfg.host if _cfg.host != '0.0.0.0' else '127.0.0.1'
+                self._json(ensure_dds_started(_cfg.udp_port, _cfg.udp_host, _cfg.dds_ws_port, bind_host))
+            except Exception as e:
+                self._json({'started': False, 'error': str(e)})
+
+        elif path == '/api/dds_receiver_config':
+            self._json(dds_get_receiver_config())
+
+        elif path == '/api/dds_stream_config':
+            self._json(dds_get_stream_config())
+
+        elif path == '/api/dds_rebind':
+            try:
+                host = params.get('ip', ['127.0.0.1'])[0] or '127.0.0.1'
+                port = int(params.get('port', ['9870'])[0])
+                self._json({'ok': True, **rebind_udp_listener(host, port)})
+            except (ValueError, IndexError):
+                self._json({'ok': False, 'error': 'invalid ip or port'})
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
+
+        elif path == '/api/dds_set_max_points':
+            try:
+                n = int(params.get('n', ['60000'])[0])
+                set_max_live_points(n)
+                self._json({'ok': True, 'max_points': n})
+            except (ValueError, IndexError):
+                self._json({'ok': False})
 
         elif path == '/api/open_in_explorer':
             self._handle_open_explorer(params)
@@ -367,14 +408,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json({'ok': False, 'error': str(e)})
 
     def _handle_dds_frame(self, params):
-        """Return the latest DDS live frame if newer than after_id, else JSON {frame_id, changed}."""
+        """Long-poll: block until a frame newer than after_id arrives (up to 2 s), then return it."""
         try:
             after_id = int(params.get('after', ['-1'])[0])
         except (ValueError, IndexError):
             after_id = -1
-        fid, payload = get_latest_frame(after_id)
+        fid, payload = get_latest_frame_blocking(after_id, timeout=2.0)
         if payload is None:
-            # No new frame available
+            # Timeout — no new frame yet
             self._json({'frame_id': fid, 'changed': False})
             return
         try:

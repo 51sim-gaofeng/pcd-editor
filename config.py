@@ -44,7 +44,9 @@ class _Config:
         self.port: int = 8089
         self.host: str = '127.0.0.1'
         self.no_window: bool = False
+        self.udp_host: str = '255.255.255.255'
         self.udp_port: int = 9870
+        self.dds_ws_port: int = 8090
 
     @property
     def traj_dir(self) -> str:
@@ -66,6 +68,10 @@ def init_from_args(argv):
                     help='Disable pywebview; run as headless HTTP server only')
     ap.add_argument('--udp-port', type=int, default=9870, dest='udp_port',
                     help='UDP port for DDS live point cloud (default: 9870)')
+    ap.add_argument('--udp-ip', type=str, default='255.255.255.255', dest='udp_host',
+                    help='UDP bind address for DDS receiver (default: 127.0.0.1)')
+    ap.add_argument('--dds-ws-port', type=int, default=None, dest='dds_ws_port',
+                    help='WebSocket port for DDS live stream (default: HTTP port + 1)')
     ap.add_argument('positional', nargs='*', help='[DIR] [PORT] (legacy positional form)')
     a = ap.parse_args(argv)
 
@@ -91,4 +97,6 @@ def init_from_args(argv):
     config.port = a.port
     config.host = a.ip
     config.no_window = a.no_window
+    config.udp_host = a.udp_host
     config.udp_port = a.udp_port
+    config.dds_ws_port = a.dds_ws_port if a.dds_ws_port is not None else (a.port + 1)

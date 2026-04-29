@@ -87,10 +87,20 @@
         <div class="grp-title">Grid</div>
         <div class="row">
           <label style="flex:1"><input type="checkbox" id="grid-show" checked onchange="applyGrid()"> Show</label>
+          <label class="row" style="gap:4px;flex:1;justify-content:flex-end">
+            <span style="font-size:.7rem;color:#64748b">Style</span>
+            <select id="grid-style" onchange="applyGrid()" style="flex:0 0 auto">
+              <option value="square">Square</option>
+              <option value="circle">Circle</option>
+            </select>
+          </label>
         </div>
         <div class="grid2">
           <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Size</span><input type="number" id="grid-size" value="200" min="1" max="10000" step="10" onchange="applyGrid()"></label>
           <label class="row" style="gap:3px" title="cell size (m)"><span style="font-size:.7rem;color:#64748b">Step</span><input type="number" id="grid-step" value="1" min="0.1" max="100" step="0.5" onchange="applyGrid()"></label>
+        </div>
+        <div class="row" style="margin-top:4px">
+          <label class="row" style="gap:3px;flex:1" title="坐标标签间隔 (m)"><span style="font-size:.7rem;color:#64748b">Label</span><input type="number" id="grid-label-step" value="10" min="0.5" max="1000" step="1" onchange="applyGrid()" style="flex:1;min-width:0"><span style="font-size:.65rem;color:#475569">m</span></label>
         </div>
       </div>
     </div>
@@ -111,10 +121,47 @@
         <span id="play-fps-val" style="width:26px;text-align:right;color:#cbd5e1">10</span>
       </div>
       <div style="font-size:.65rem;color:#334155;text-align:center">←→ step · Space play/pause</div>
-      <hr style="border-color:#334155;margin:6px 0">
+    </div>
+  </details>
+  <details id="sec-dds" open>
+    <summary>&#128225; DDS Receiver</summary>
+    <div class="sec">
       <div class="row" style="justify-content:center">
         <button class="btn" id="btn-dds" onclick="ddsToggle()" title="Receive live DDS point cloud via UDP">&#x1F4E1; DDS Live</button>
+        <button class="btn ghost" id="btn-dds-pause" onclick="ddsPauseToggle()" title="\u6682\u505c\u6e32\u67d3\uff08\u4ecd\u63a5\u6536\u6570\u636e\uff09" style="display:none">&#x23F8; Pause</button>
         <span id="dds-status" style="font-size:.65rem;color:#475569;margin-left:6px">off</span>
+      </div>
+      <div style="display:grid;grid-template-columns:auto 1fr auto 1fr;gap:5px;align-items:center;margin-top:6px">
+        <span style="font-size:.7rem;color:#64748b">IP</span>
+        <input type="text" id="dds-bind-ip" value="255.255.255.255" placeholder="255.255.255.255" style="min-width:0;width:100%">
+        <span style="font-size:.7rem;color:#64748b">Port</span>
+        <input type="number" id="dds-bind-port" min="1" max="65535" step="1" value="9870" style="min-width:0;width:100%">
+      </div>
+      <div class="grid2" style="margin-top:4px">
+        <button class="btn ghost" onclick="ddsApplyReceiverConfig()">Apply Receiver</button>
+        <button class="btn ghost" onclick="ddsRefreshReceiverConfig()">Refresh</button>
+      </div>
+      <div id="dds-bind-status" style="font-size:.62rem;color:#64748b;text-align:center;margin-top:4px">bind: 255.255.255.255:9870</div>
+      <hr style="border-color:#334155;margin:6px 0">
+      <div class="row" style="justify-content:center;margin-top:4px;gap:6px;align-items:center">
+        <span style="font-size:.65rem;color:#64748b;white-space:nowrap">Max pts</span>
+        <input type="range" id="dds-max-pts" min="10000" max="1000000" step="10000" value="60000"
+               style="flex:1;accent-color:#3b82f6"
+               oninput="ddsSetMaxPointsFromUI(this.value)">
+        <span id="dds-max-pts-val" style="font-size:.65rem;color:#94a3b8;min-width:30px">60k</span>
+      </div>
+      <div class="row" style="justify-content:center;margin-top:4px;gap:6px;align-items:center">
+        <span style="font-size:.65rem;color:#64748b;white-space:nowrap">Render FPS</span>
+        <input type="range" id="dds-render-fps" min="1" max="30" step="1" value="10"
+               style="flex:1;accent-color:#34d399"
+               oninput="ddsSetRenderFpsFromUI(this.value)">
+        <span id="dds-render-fps-val" style="font-size:.65rem;color:#94a3b8;min-width:30px">10</span>
+      </div>
+      <div class="row" style="justify-content:center;margin-top:2px">
+        <label style="font-size:.65rem;color:#64748b;display:flex;align-items:center;gap:4px;cursor:pointer">
+          <input type="checkbox" id="dds-adaptive" checked onchange="ddsToggleAdaptive(this.checked)" style="accent-color:#34d399">
+          自适应点数预算（Foxglove风格）
+        </label>
       </div>
     </div>
   </details>
@@ -238,5 +285,39 @@
 </script>
 <script type="module" src="/static/three_view.js"></script>
 <script defer src="/static/ui.js"></script>
+<div id="ctxmenu" style="position:fixed;display:none;z-index:99999;background:#1e293b;border:1px solid #334155;border-radius:4px;padding:4px 0;font-size:.72rem;color:#e2e8f0;box-shadow:0 4px 12px rgba(0,0,0,.4);min-width:90px;user-select:none">
+  <div id="ctx-copy" style="padding:5px 14px;cursor:pointer">复制</div>
+</div>
+<script>
+(function(){
+  const menu=document.getElementById('ctxmenu'),copy=document.getElementById('ctx-copy');
+  function hide(){menu.style.display='none';}
+  document.addEventListener('contextmenu',e=>{
+    const t=e.target;
+    const inEditable=t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable);
+    const inLog=t&&t.closest&&t.closest('#log-panel');
+    if(!inEditable&&!inLog)return; // 默认行为（无菜单）
+    e.preventDefault();
+    const sel=String(window.getSelection()||'');
+    copy.style.opacity=sel?'1':'.4';copy.style.pointerEvents=sel?'auto':'none';
+    menu.style.left=Math.min(e.clientX,innerWidth-110)+'px';
+    menu.style.top=Math.min(e.clientY,innerHeight-40)+'px';
+    menu.style.display='block';
+  });
+  copy.addEventListener('mouseenter',()=>{if(copy.style.pointerEvents!=='none')copy.style.background='#334155';});
+  copy.addEventListener('mouseleave',()=>{copy.style.background='';});
+  copy.addEventListener('click',()=>{
+    const sel=String(window.getSelection()||'');
+    if(sel){
+      if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(sel).catch(()=>{});
+      else{try{document.execCommand('copy');}catch(_){}}
+    }
+    hide();
+  });
+  document.addEventListener('mousedown',e=>{if(!menu.contains(e.target))hide();});
+  window.addEventListener('blur',hide);window.addEventListener('scroll',hide,true);
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')hide();});
+})();
+</script>
 </body>
 </html>

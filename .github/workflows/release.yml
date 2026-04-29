@@ -47,11 +47,11 @@ jobs:
       # pywebview is Windows-only; skip on Linux to avoid gi bundling issues
       - name: Install Python dependencies (Windows)
         if: runner.os == 'Windows'
-        run: pip install numpy pyinstaller pywebview pillow
+        run: pip install numpy pyinstaller pywebview pillow websockets
 
       - name: Install Python dependencies (Linux)
         if: runner.os == 'Linux'
-        run: pip install numpy pyinstaller pillow
+        run: pip install numpy pyinstaller pillow websockets
 
       - name: Generate app icon
         run: python assets/generate_icon.py

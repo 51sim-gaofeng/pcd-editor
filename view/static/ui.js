@@ -161,77 +161,275 @@ document.addEventListener('keydown',function(e){
   if(e.key==='Escape'){exitAllModes();return;}
   const tag=document.activeElement.tagName;
   if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT')return;
+  if(_ddsActive)return;
   if(e.key==='ArrowLeft'){playStep(-1);e.preventDefault();}
   else if(e.key==='ArrowRight'){playStep(1);e.preventDefault();}
   else if(e.key===' '){playToggle();e.preventDefault();}
 });
 // end playback
 // ── DDS Live mode ────────────────────────────────────────────────────────────
-let _ddsActive=false,_ddsTimer=null,_ddsLastId=-1,_ddsFps=10;
-// FPS meter
-let _ddsFpsCnt=0,_ddsFpsT0=performance.now();
+let _ddsActive=false,_ddsLastId=-1,_ddsStatusPoll=null,_ddsPaused=false;
+// 最新收到但尚未渲染的帧（fetch 写入，rAF 消费）
+let _ddsPending=null; // {floats, nfields, fields, fid, npoints} | null
+// Foxglove 风格：渲染预算（固定帧率上限）+ 自适应点数预算
+let _ddsRenderFpsCap=20,_ddsRenderMinInterval=1000/20,_ddsLastRenderAt=0;
+let _ddsAdaptive=true,_ddsRenderMsEwma=0,_ddsAdaptCooldownUntil=0;
+let _ddsCurrentMaxPoints=60000,_ddsAutoMinPoints=10000,_ddsAutoMaxPoints=1000000;
+let _ddsLastUiStatusAt=0,_ddsLastZRangeAt=0;
+let _ddsLastUiStatusFid=-1,_ddsLastUiStatusTs=0;
+let _ddsFetchedCount=0,_ddsRenderedCount=0,_ddsOverwrittenCount=0;
+let _ddsLastFetchedCount=0,_ddsLastRenderedCount=0,_ddsLastOverwrittenCount=0;
+let _ddsWorkerParseMsTotal=0,_ddsLastWorkerParseMsTotal=0;
+let _ddsTransitMsTotal=0,_ddsLastTransitMsTotal=0,_ddsTransitSamples=0,_ddsLastTransitSamples=0;
+let _ddsWorkerOpenCount=0,_ddsWorkerCloseCount=0;
+let _ddsWorker=null;
+// FPS meter（渲染侧）
+let _ddsFpsCnt=0,_ddsFpsT0=performance.now(),_ddsFpsLast='';
 function _ddsFpsTick(){
   _ddsFpsCnt++;
   const now=performance.now(),dt=now-_ddsFpsT0;
-  if(dt>=1000){const fps=(_ddsFpsCnt*1000/dt).toFixed(1);_ddsFpsCnt=0;_ddsFpsT0=now;
-    const el=document.getElementById('dds-status');
-    if(el&&_ddsActive)el.textContent=(el.textContent.split('·')[0]||'').trim()+' · '+fps+' fps';}
+  if(dt>=1000){_ddsFpsLast=(_ddsFpsCnt*1000/dt).toFixed(1)+' fps';_ddsFpsCnt=0;_ddsFpsT0=now;}
+}
+function _ddsRoundPts(v){return Math.max(_ddsAutoMinPoints,Math.min(_ddsAutoMaxPoints,Math.round(v/1000)*1000));}
+function _ddsSetMaxPoints(n,silent){
+  const v=_ddsRoundPts(parseInt(n,10)||_ddsCurrentMaxPoints);
+  _ddsCurrentMaxPoints=v;
+  const el=document.getElementById('dds-max-pts');if(el&&parseInt(el.value,10)!==v)el.value=v;
+  const val=document.getElementById('dds-max-pts-val');if(val)val.textContent=Math.round(v/1000)+'k';
+  fetch('/api/dds_set_max_points?n='+v).catch(()=>{});
+  if(!silent)setStatus('DDS max points: '+v.toLocaleString(),'ok');
+}
+function ddsSetMaxPointsFromUI(v){_ddsSetMaxPoints(v,false);}
+function ddsSetRenderFpsFromUI(v){
+  const fps=Math.max(1,Math.min(30,parseInt(v,10)||10));
+  _ddsRenderFpsCap=fps;
+  // 留 5% 余量，避免与源帧率 (例如 10 fps) 临界对齐时因抖动漏帧 → 实测 9 fps。
+  _ddsRenderMinInterval=(1000/fps)*0.95;
+  const el=document.getElementById('dds-render-fps-val');if(el)el.textContent=String(fps);
+}
+function ddsToggleAdaptive(on){_ddsAdaptive=!!on;}
+async function _ddsStartWorker(){
+  if(_ddsWorker){try{_ddsWorker.terminate();}catch(e){} _ddsWorker=null;}
+  // Lazy-start the DDS UDP listener + WS server on first use.
+  try{await fetch('/api/dds_ensure');}catch(e){}
+  let wsCfg=null;
+  try{
+    const r=await fetch('/api/dds_stream_config');
+    wsCfg=await r.json();
+  }catch(e){
+    setStatus('DDS stream config error','err');
+    return;
+  }
+  const wsProto=location.protocol==='https:'?'wss':'ws';
+  const wsUrl=wsProto+'://'+location.hostname+':'+(wsCfg.port||8090);
+  _ddsWorker=new Worker('/static/dds_fetch_worker.js');
+  _ddsWorker.onmessage=(event)=>{
+    const data=event.data||{};
+    if(!_ddsActive)return;
+    if(data.type==='frame'){
+      _ddsLastId=data.fid||0;
+      const floats=new Float32Array(data.buffer,data.dataOff,data.npoints*data.nfields);
+      _ddsFetchedCount++;
+      _ddsWorkerParseMsTotal+=(data.parseMs||0);
+      if(typeof data.transitMs==='number'&&data.transitMs>=0){
+        _ddsTransitMsTotal+=data.transitMs;
+        _ddsTransitSamples++;
+      }
+      if(_ddsPending)_ddsOverwrittenCount++;
+      _ddsPending={floats,nfields:data.nfields,fields:data.fields,fid:data.fid,npoints:data.npoints,fname:data.fname||''};
+      return;
+    }
+    if(data.type==='ws-open'){
+      _ddsWorkerOpenCount++;
+      _logUI('dds-ws', 'open '+(data.url||wsUrl)+' '+(data.connectMs||0).toFixed(1)+'ms', 'ok');
+      return;
+    }
+    if(data.type==='ws-close'){
+      _ddsWorkerCloseCount++;
+      _logUI('dds-ws', 'closed; reconnecting', 'warn');
+      return;
+    }
+    if(data.type==='error'){
+      document.getElementById('dds-status').textContent='error';
+      document.getElementById('dds-status').style.color='#f87171';
+      _logUI('dds-ws', (data.stage||'worker')+': '+(data.message||'unknown error'), 'err');
+    }
+  };
+  _ddsWorker.postMessage({cmd:'start',wsUrl});
+}
+function _ddsStopWorker(){
+  if(!_ddsWorker)return;
+  try{_ddsWorker.postMessage({cmd:'stop'});}catch(e){}
+  try{_ddsWorker.terminate();}catch(e){}
+  _ddsWorker=null;
+}
+async function ddsRefreshReceiverConfig(){
+  try{
+    const [receiverResp,streamResp]=await Promise.all([
+      fetch('/api/dds_receiver_config'),
+      fetch('/api/dds_stream_config'),
+    ]);
+    const d=await receiverResp.json();
+    const s=await streamResp.json();
+    const ip=document.getElementById('dds-bind-ip');
+    // Don't overwrite user's pending edits; only fill if empty/unfocused.
+    if(ip&&document.activeElement!==ip&&!ip.value)ip.value=d.host||'255.255.255.255';
+    const pt=document.getElementById('dds-bind-port');
+    if(pt&&document.activeElement!==pt&&!pt.value)pt.value=String(d.port||9870);
+    const st=document.getElementById('dds-bind-status');
+    if(st){
+      const src=(d.src_host&&d.src_host.length)?(' \u2190 from '+d.src_host+':'+d.src_port):'';
+      st.textContent='udp: '+(d.host||'255.255.255.255')+':'+(d.port||9870)+(d.running?' (running)':' (stopped)')+src+'  |  ws: '+location.hostname+':'+(s.port||8090)+(s.running?' (running)':' (stopped)');
+    }
+  }catch(e){
+    const st=document.getElementById('dds-bind-status');if(st)st.textContent='bind: read failed';
+  }
+}
+async function ddsApplyReceiverConfig(){
+  const ip=(document.getElementById('dds-bind-ip')?.value||'127.0.0.1').trim()||'127.0.0.1';
+  const port=parseInt(document.getElementById('dds-bind-port')?.value||'9870',10);
+  if(!(port>=1&&port<=65535)){setStatus('DDS receiver port invalid','err');return;}
+  try{
+    const r=await fetch('/api/dds_rebind?ip='+encodeURIComponent(ip)+'&port='+port);
+    const d=await r.json();
+    if(!d.ok){setStatus('DDS rebind failed: '+(d.error||'unknown'),'err');return;}
+    const st=document.getElementById('dds-bind-status');
+    if(st)st.textContent='udp: '+d.host+':'+d.port+(d.running?' (running)':' (stopped)');
+    setStatus('DDS receiver bound to '+d.host+':'+d.port,'ok');
+    ddsRefreshReceiverConfig();
+  }catch(e){
+    setStatus('DDS rebind error','err');
+  }
+}
+function _ddsAdaptiveBudget(renderMs){
+  _ddsRenderMsEwma=_ddsRenderMsEwma>0?(_ddsRenderMsEwma*0.85+renderMs*0.15):renderMs;
+  const now=performance.now();
+  if(!_ddsAdaptive||now<_ddsAdaptCooldownUntil)return;
+  if(_ddsRenderMsEwma>40&&_ddsCurrentMaxPoints>_ddsAutoMinPoints){
+    _ddsSetMaxPoints(Math.max(_ddsAutoMinPoints,Math.floor(_ddsCurrentMaxPoints*0.8)),true);
+    _ddsAdaptCooldownUntil=now+1400;
+    return;
+  }
+  if(_ddsRenderMsEwma<18&&_ddsCurrentMaxPoints<_ddsAutoMaxPoints){
+    _ddsSetMaxPoints(Math.min(_ddsAutoMaxPoints,Math.floor(_ddsCurrentMaxPoints*1.1)),true);
+    _ddsAdaptCooldownUntil=now+2200;
+  }
+}
+// rAF 驱动的渲染循环：只消费 _ddsPending，与 fetch 完全解耦
+function _ddsRenderTick(){
+  if(!_ddsActive)return;
+  if(_ddsPaused){requestAnimationFrame(_ddsRenderTick);return;}
+  const now=performance.now();
+  if(now-_ddsLastRenderAt<_ddsRenderMinInterval){requestAnimationFrame(_ddsRenderTick);return;}
+  if(_ddsPending){
+    const{floats,nfields,fields,fid,npoints}=_ddsPending;
+    _ddsPending=null;
+    const r0=performance.now();
+    if(window._three.updateLive)window._three.updateLive(floats,nfields,fields);
+    else window._three.loadPoints(floats,nfields,fields);
+    // Z range UI update is expensive; run at low frequency in live mode.
+    if(npoints>0&&now-_ddsLastZRangeAt>=800){_applyZRange(floats,nfields,fields);_ddsLastZRangeAt=now;}
+    _ddsLastRenderAt=now;
+    _ddsAdaptiveBudget(performance.now()-r0);
+    _ddsRenderedCount++;
+    _ddsFpsTick();
+    const fpsStr=_ddsFpsLast?' \u00b7 '+_ddsFpsLast:'';
+    document.getElementById('dds-status').textContent='frame '+fid+' \u00b7 '+npoints.toLocaleString()+' pts'+fpsStr;
+    document.getElementById('dds-status').style.color='#34d399';
+    document.getElementById('info').textContent=npoints.toLocaleString()+' pts  \u00b7  DDS Live #'+fid;
+    // Avoid per-frame log/DOM churn from setStatus; keep periodic heartbeat only.
+    if(now-_ddsLastUiStatusAt>=1000){
+      const dt=Math.max(1,now-_ddsLastUiStatusTs);
+      const recvDelta=_ddsFetchedCount-_ddsLastFetchedCount;
+      const renderDelta=_ddsRenderedCount-_ddsLastRenderedCount;
+      const overwriteDelta=_ddsOverwrittenCount-_ddsLastOverwrittenCount;
+      const workerParseDelta=_ddsWorkerParseMsTotal-_ddsLastWorkerParseMsTotal;
+      const transitDelta=_ddsTransitMsTotal-_ddsLastTransitMsTotal;
+      const transitSampleDelta=_ddsTransitSamples-_ddsLastTransitSamples;
+      const recvHz=((recvDelta*1000)/dt).toFixed(1);
+      const renderHz=((renderDelta*1000)/dt).toFixed(1);
+      const avgParseMs=recvDelta>0?(workerParseDelta/recvDelta).toFixed(2):'0.00';
+      const avgTransitMs=transitSampleDelta>0?(transitDelta/transitSampleDelta).toFixed(1):'-';
+      const avgRenderMs=_ddsRenderMsEwma.toFixed(1);
+      const lt=window._liveLastTimings||{loopMs:0,flushMs:0,np:0};
+      const gpuMs=(window._renderStats&&window._renderStats.ewmaMs)?window._renderStats.ewmaMs.toFixed(1):'-';
+      setStatus('DDS #'+fid+' recv:'+recvDelta+'('+recvHz+'/s) render:'+renderDelta+'('+renderHz+'/s) overwrite:'+overwriteDelta+' parse:'+avgParseMs+'ms transit:'+avgTransitMs+'ms cpu:'+avgRenderMs+'ms loop:'+lt.loopMs.toFixed(1)+'ms flush:'+lt.flushMs.toFixed(1)+'ms gpu:'+gpuMs+'ms','ok');
+      _ddsLastUiStatusAt=now;
+      _ddsLastUiStatusFid=fid;
+      _ddsLastUiStatusTs=now;
+      _ddsLastFetchedCount=_ddsFetchedCount;
+      _ddsLastRenderedCount=_ddsRenderedCount;
+      _ddsLastOverwrittenCount=_ddsOverwrittenCount;
+      _ddsLastWorkerParseMsTotal=_ddsWorkerParseMsTotal;
+      _ddsLastTransitMsTotal=_ddsTransitMsTotal;
+      _ddsLastTransitSamples=_ddsTransitSamples;
+    }
+  }
+  requestAnimationFrame(_ddsRenderTick);
+}
+function _ddsLockFileUi(on){
+  ['sec-file','sec-play'].forEach(id=>{
+    const el=document.getElementById(id);if(!el)return;
+    el.classList.toggle('dds-locked',!!on);
+    if(on)el.removeAttribute('open');
+  });
 }
 function ddsToggle(){
   if(_ddsActive){ddsStop();return;}
-  _ddsActive=true;_ddsLastId=-1;_ddsFpsCnt=0;_ddsFpsT0=performance.now();
+  _ddsActive=true;_ddsLastId=-1;_ddsPending=null;_ddsFpsCnt=0;_ddsFpsT0=performance.now();_ddsFpsLast='';
+  _ddsLastRenderAt=0;_ddsRenderMsEwma=0;_ddsAdaptCooldownUntil=0;
+  _ddsLastUiStatusAt=0;_ddsLastZRangeAt=0;
+  _ddsLastUiStatusFid=-1;_ddsLastUiStatusTs=performance.now();
+  _ddsFetchedCount=0;_ddsRenderedCount=0;_ddsOverwrittenCount=0;
+  _ddsLastFetchedCount=0;_ddsLastRenderedCount=0;_ddsLastOverwrittenCount=0;
+  _ddsWorkerParseMsTotal=0;_ddsLastWorkerParseMsTotal=0;
+  _ddsTransitMsTotal=0;_ddsLastTransitMsTotal=0;_ddsTransitSamples=0;_ddsLastTransitSamples=0;
+  _ddsWorkerOpenCount=0;_ddsWorkerCloseCount=0;
   _stopPlay(); // stop file playback
+  _ddsLockFileUi(true);
+  const _ovl=document.getElementById('overlay');if(_ovl)_ovl.style.display='none';
   document.getElementById('btn-dds').innerHTML='&#x23F9; DDS Stop';
   document.getElementById('btn-dds').style.background='#dc2626';
   document.getElementById('dds-status').textContent='connecting\u2026';
   document.getElementById('dds-status').style.color='#facc15';
+  ddsSetRenderFpsFromUI(document.getElementById('dds-render-fps')?.value||'10');
+  ddsToggleAdaptive(document.getElementById('dds-adaptive')?.checked!==false);
+  _ddsSetMaxPoints(document.getElementById('dds-max-pts')?.value||_ddsCurrentMaxPoints,true);
   setStatus('DDS Live: waiting for frames\u2026','loading');
-  _ddsLoopStep();
+  requestAnimationFrame(_ddsRenderTick); // 启动渲染循环
+  _ddsStartWorker();                     // 启动 worker WebSocket 拉流/解析
+  // Poll receiver/stream config so the UI shows the live broadcaster IP.
+  if(_ddsStatusPoll)clearInterval(_ddsStatusPoll);
+  _ddsStatusPoll=setInterval(()=>{if(_ddsActive)ddsRefreshReceiverConfig();},1000);
+  _ddsPaused=false;
+  const pb=document.getElementById('btn-dds-pause');
+  if(pb){pb.style.display='';pb.innerHTML='&#x23F8; Pause';pb.style.background='';}
+}
+function ddsPauseToggle(){
+  if(!_ddsActive)return;
+  _ddsPaused=!_ddsPaused;
+  const pb=document.getElementById('btn-dds-pause');
+  if(pb){
+    pb.innerHTML=_ddsPaused?'&#x25B6; Resume':'&#x23F8; Pause';
+    pb.style.background=_ddsPaused?'#f59e0b':'';
+  }
+  const st=document.getElementById('dds-status');
+  if(st&&_ddsPaused){st.textContent='paused';st.style.color='#f59e0b';}
 }
 function ddsStop(){
   _ddsActive=false;
-  if(_ddsTimer){clearTimeout(_ddsTimer);_ddsTimer=null;}
+  _ddsPaused=false;
+  _ddsPending=null;
+  _ddsStopWorker();
+  if(_ddsStatusPoll){clearInterval(_ddsStatusPoll);_ddsStatusPoll=null;}
+  const pb=document.getElementById('btn-dds-pause');if(pb){pb.style.display='none';pb.style.background='';}
+  _ddsLockFileUi(false);
   if(window._three&&window._three.exitLiveMode)window._three.exitLiveMode();
   document.getElementById('btn-dds').innerHTML='&#x1F4E1; DDS Live';
   document.getElementById('btn-dds').style.background='';
   document.getElementById('dds-status').textContent='off';
   document.getElementById('dds-status').style.color='#475569';
   setStatus('DDS stopped','ok');
-}
-async function _ddsLoopStep(){
-  if(!_ddsActive)return;
-  try{
-    const resp=await fetch('/api/dds_frame?after='+_ddsLastId);
-    if(!_ddsActive)return;
-    const ct=resp.headers.get('Content-Type')||'';
-    if(ct.includes('octet-stream')){
-      const fid=parseInt(resp.headers.get('X-Frame-Id'))||0;
-      _ddsLastId=fid;
-      const buf=await resp.arrayBuffer();
-      const{fields,npoints,nfields,floats}=_parsePcdBuf(buf);
-      // fast-path: reuse pre-allocated GPU buffers
-      if(window._three.updateLive){window._three.updateLive(floats,nfields,fields);}
-      else{window._three.loadPoints(floats,nfields,fields);}
-      if(npoints>0)_applyZRange(floats,nfields,fields);
-      _ddsFpsTick();
-      document.getElementById('dds-status').textContent='frame '+fid+' \u00b7 '+npoints.toLocaleString()+' pts';
-      document.getElementById('dds-status').style.color='#34d399';
-      document.getElementById('info').textContent=npoints.toLocaleString()+' pts  \u00b7  DDS Live #'+fid;
-      setStatus('DDS Live #'+fid,'ok');
-    }else{
-      const j=await resp.json();
-      if(j.frame_id<0){
-        document.getElementById('dds-status').textContent='no signal';
-        document.getElementById('dds-status').style.color='#f87171';
-      }
-    }
-  }catch(e){
-    if(!_ddsActive)return;
-    document.getElementById('dds-status').textContent='error';
-    document.getElementById('dds-status').style.color='#f87171';
-  }
-  // poll as fast as possible — no artificial throttle
-  if(_ddsActive)_ddsTimer=setTimeout(_ddsLoopStep,0);
 }
 // end DDS live
 function setStatus(m,c){
@@ -243,7 +441,7 @@ function setStatus(m,c){
     if(c!=='loading' || (m.length>4 && !/\.\.\.|\u2026/.test(m))) _logUI('status', m, lv);
   }
 }
-function onFileSelect(path){_stopPlay();if(path)loadFile(path);}
+function onFileSelect(path){if(_ddsActive)return;_stopPlay();if(path)loadFile(path);}
 async function refreshList(){const r=await fetch('/api/files');const d=await r.json();const sel=document.getElementById('file-select');sel.innerHTML='<option value="">&#8212; select file &#8212;</option>';d.files.forEach(f=>{const o=document.createElement('option');o.value=f;o.textContent=f;sel.appendChild(o);});_playFiles=d.files||[];_playTotal=_playFiles.length;const ts=document.getElementById('play-total');if(ts)ts.textContent=_playTotal;const sk=document.getElementById('play-seek');if(sk){sk.max=Math.max(0,_playTotal-1);sk.value=_playCur;}}
 function _applyZRange(floats,nfields,fields){const zi=fields.indexOf('z');if(zi<0)return;const np=(floats.length/nfields)|0;let mn=Infinity,mx=-Infinity;for(let i=0;i<np;i++){const z=floats[i*nfields+zi];if(z<mn)mn=z;if(z>mx)mx=z;}const step=Math.max(0.01,parseFloat(((mx-mn)/200).toFixed(2)));['flt-zmin','flt-zmax'].forEach((id,ii)=>{const el=document.getElementById(id);if(el){el.min=mn.toFixed(2);el.max=mx.toFixed(2);el.step=step;el.value=ii===0?mn.toFixed(2):mx.toFixed(2);}});}
 async function loadFile(path){
@@ -268,8 +466,10 @@ function applyGrid(){
   const show=document.getElementById('grid-show').checked;
   const size=Math.max(1,parseFloat(document.getElementById('grid-size').value)||200);
   const step=Math.max(0.1,parseFloat(document.getElementById('grid-step').value)||1);
+  const style=document.getElementById('grid-style')?.value||'square';
+  const labelStep=Math.max(0.5,parseFloat(document.getElementById('grid-label-step')?.value)||10);
   const div=Math.max(1,Math.round(size/step));
-  if(window._grid){window._grid.setSize(size,div);window._grid.setVisible(show);}
+  if(window._grid){window._grid.setStyle(style);window._grid.setLabelStep(labelStep);window._grid.setSize(size,div);window._grid.setVisible(show);}
 }
 function applyFlip(){const x=document.getElementById('flip-x').checked?-1:1,y=document.getElementById('flip-y').checked?-1:1,z=document.getElementById('flip-z').checked?-1:1;window._three.setFlip(x,y,z);}
 let _dA=false,_pA=false,_lA=false,_eA=false;
@@ -416,7 +616,7 @@ async function loadFileAbs(absPath){
     document.getElementById('info').textContent=npoints.toLocaleString()+' pts'+(original_count!==npoints?' (\u2193'+original_count.toLocaleString()+')':'')+'  \u00b7  '+(fname||absPath.split(/[\\/]/).pop());setStatus('OK','ok');
   }catch(e){setStatus('fetch error','err');console.error(e);}
 }
-refreshList();refreshTrajList();
+refreshList();refreshTrajList();ddsRefreshReceiverConfig();
 
 // ── Drag & drop .pcd files / folders onto the 3D canvas ─────────────────────────────
 (function(){
