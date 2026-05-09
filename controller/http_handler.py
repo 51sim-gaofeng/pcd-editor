@@ -33,6 +33,7 @@ _STATIC_MIME = {
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
 
     def log_message(self, fmt, *args):
         pass  # suppress per-request access log
@@ -212,6 +213,19 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == '/api/open_in_explorer':
             self._handle_open_explorer(params)
+
+        elif path == '/api/camera_frame':
+            self._handle_camera_frame(params)
+
+        elif path == '/api/camera_status':
+            from model.camera_model import get_status as cam_status
+            self._json(cam_status())
+
+        elif path == '/api/camera_ensure':
+            self._handle_camera_ensure(params)
+
+        elif path == '/api/camera_rebind':
+            self._handle_camera_rebind(params)
 
         else:
             self.send_error(404)
@@ -404,6 +418,48 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({'ok': True, 'path': full})
             else:
                 self._json({'ok': False, 'error': 'not a directory'})
+        except Exception as e:
+            self._json({'ok': False, 'error': str(e)})
+
+    def _handle_camera_frame(self, params):
+        """Long-poll: block until a camera frame newer than after_id arrives (up to 2s)."""
+        try:
+            after_id = int(params.get('after', ['-1'])[0])
+        except (ValueError, IndexError):
+            after_id = -1
+        from model.camera_model import get_latest_frame_blocking as cam_frame
+        fid, jpeg = cam_frame(after_id, timeout=2.0)
+        if jpeg is None:
+            self._json({'frame_id': fid, 'changed': False})
+            return
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('X-Frame-Id', str(fid))
+            self.send_header('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate')
+            self.send_header('Pragma', 'no-cache')
+            self.send_header('Content-Length', str(len(jpeg)))
+            self.end_headers()
+            self.wfile.write(jpeg)
+        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _handle_camera_ensure(self, params):
+        try:
+            host = params.get('ip', ['127.0.0.1'])[0] or '127.0.0.1'
+            port = int(params.get('port', ['9870'])[0])
+            from model.camera_model import start_udp_listener as cam_start, get_status as cam_status
+            cam_start(port=port, host=host)
+            self._json({'started': True, **cam_status()})
+        except Exception as e:
+            self._json({'started': False, 'error': str(e)})
+
+    def _handle_camera_rebind(self, params):
+        try:
+            host = params.get('ip', ['127.0.0.1'])[0] or '127.0.0.1'
+            port = int(params.get('port', ['9870'])[0])
+            from model.camera_model import rebind as cam_rebind
+            self._json({'ok': True, **cam_rebind(host, port)})
         except Exception as e:
             self._json({'ok': False, 'error': str(e)})
 

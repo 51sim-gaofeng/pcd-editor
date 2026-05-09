@@ -617,6 +617,188 @@ async function loadFileAbs(absPath){
   }catch(e){setStatus('fetch error','err');console.error(e);}
 }
 refreshList();refreshTrajList();ddsRefreshReceiverConfig();
+// ── Camera mode (GVSP UDP receiver) ─────────────────────────────────────────
+const _CAM_PCD_SECTIONS=['sec-file','sec-view','sec-play','sec-dds','sec-traj','sec-edit'];
+let _camMode=false,_camActive=false,_camLastId=-1;
+let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0;
+let _camShowFps=true;
+function _camGetCanvasCtx(){
+  const cv=document.getElementById('camera-canvas');if(!cv)return null;
+  if(!_camCanvasCtx)_camCanvasCtx=cv.getContext('2d',{alpha:false,desynchronized:true});
+  return _camCanvasCtx;
+}
+function camToggleFps(on){
+  _camShowFps=!!on;
+  const badge=document.getElementById('cam-fps-badge');if(!badge)return;
+  if(!_camShowFps||!_camActive||!_camMode||_camLastId<0){badge.style.display='none';return;}
+  badge.style.display='block';
+  badge.textContent=_camFps.toFixed(1)+' FPS';
+}
+function _camResetRender(){
+  _camRenderBusy=false;_camPendingFrame=null;_camFpsTs=0;_camFpsFrames=0;_camFps=0;
+  const img=document.getElementById('camera-img');
+  if(img){img.onload=null;img.onerror=null;img.src='';img.style.display='none';}
+  if(_camCurrentBlobUrl){URL.revokeObjectURL(_camCurrentBlobUrl);_camCurrentBlobUrl=null;}
+  const badge=document.getElementById('cam-fps-badge');if(badge){badge.style.display='none';badge.textContent='';}
+  const cv=document.getElementById('camera-canvas');
+  if(cv){
+    const ctx=_camGetCanvasCtx();
+    if(ctx){ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,cv.width||0,cv.height||0);}
+    cv.style.display='none';
+  }
+}
+function _camUpdateStatus(fid,w,h){
+  const now=performance.now();
+  if(!_camFpsTs)_camFpsTs=now;
+  _camFpsFrames++;
+  const elapsed=now-_camFpsTs;
+  if(elapsed>=500){_camFps=_camFpsFrames*1000/elapsed;_camFpsFrames=0;_camFpsTs=now;}
+  const label='frame #'+fid+'  '+w+'×'+h;
+  const noSig=document.getElementById('cam-no-signal');if(noSig)noSig.style.display='none';
+  const stEl=document.getElementById('cam-status');if(stEl){stEl.textContent=label;stEl.style.color='#34d399';}
+  document.getElementById('cam-bind-status').textContent=label;
+  const badge=document.getElementById('cam-fps-badge');
+  if(badge){
+    if(_camShowFps){
+      badge.textContent=_camFps.toFixed(1)+' FPS';
+      badge.style.display='block';
+    }else{
+      badge.style.display='none';
+    }
+  }
+}
+function _camDrawBitmap(bitmap){
+  const wrap=document.getElementById('camera-wrap'),cv=document.getElementById('camera-canvas'),ctx=_camGetCanvasCtx();
+  if(!wrap||!cv||!ctx)return;
+  const rect=wrap.getBoundingClientRect();
+  const w=Math.max(1,Math.round(rect.width)),h=Math.max(1,Math.round(rect.height));
+  const dpr=window.devicePixelRatio||1,pw=Math.max(1,Math.round(w*dpr)),ph=Math.max(1,Math.round(h*dpr));
+  if(cv.width!==pw||cv.height!==ph){cv.width=pw;cv.height=ph;}
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.fillStyle='#0a0c12';ctx.fillRect(0,0,w,h);
+  const s=Math.min(w/bitmap.width,h/bitmap.height),dw=Math.max(1,Math.round(bitmap.width*s)),dh=Math.max(1,Math.round(bitmap.height*s));
+  ctx.drawImage(bitmap,(w-dw)*0.5,(h-dh)*0.5,dw,dh);
+  cv.style.display='block';
+  const img=document.getElementById('camera-img');if(img)img.style.display='none';
+}
+function _camRenderFallback(fid,buf){
+  return new Promise(resolve=>{
+    const img=document.getElementById('camera-img');if(!img){resolve();return;}
+    const blob=new Blob([buf],{type:'image/jpeg'}),url=URL.createObjectURL(blob),prevUrl=_camCurrentBlobUrl;
+    _camCurrentBlobUrl=url;
+    img.onload=()=>{
+      if(prevUrl)URL.revokeObjectURL(prevUrl);
+      img.style.display='';
+      const cv=document.getElementById('camera-canvas');if(cv)cv.style.display='none';
+      _camUpdateStatus(fid,img.naturalWidth,img.naturalHeight);
+      resolve();
+    };
+    img.onerror=()=>{URL.revokeObjectURL(url);if(_camCurrentBlobUrl===url)_camCurrentBlobUrl=null;resolve();};
+    img.src=url;
+  });
+}
+async function _camRenderFrame(fid,buf){
+  if(typeof createImageBitmap==='function'){
+    try{
+      const bitmap=await createImageBitmap(new Blob([buf],{type:'image/jpeg'}));
+      try{
+        if(!_camActive||!_camMode)return;
+        _camDrawBitmap(bitmap);
+        _camUpdateStatus(fid,bitmap.width,bitmap.height);
+        return;
+      }finally{
+        if(bitmap.close)bitmap.close();
+      }
+    }catch(_e){}
+  }
+  await _camRenderFallback(fid,buf);
+}
+function _camQueueFrame(fid,buf){
+  _camPendingFrame={fid,buf};
+  if(_camRenderBusy)return;
+  void _camDrainFrames();
+}
+async function _camDrainFrames(){
+  while(_camActive&&_camMode&&_camPendingFrame){
+    const frame=_camPendingFrame;
+    _camPendingFrame=null;
+    _camRenderBusy=true;
+    try{await _camRenderFrame(frame.fid,frame.buf);}catch(_e){}finally{_camRenderBusy=false;}
+  }
+}
+function switchMode(mode){
+  const toCam=mode==='cam';
+  if(_camMode===toCam)return;
+  _camMode=toCam;
+  document.getElementById('tab-pcd').classList.toggle('active',!toCam);
+  document.getElementById('tab-cam').classList.toggle('active',toCam);
+  _CAM_PCD_SECTIONS.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=toCam?'none':'';});
+  const secCam=document.getElementById('sec-camera');if(secCam)secCam.style.display=toCam?'':'none';
+  const camWrap=document.getElementById('camera-wrap');if(camWrap)camWrap.classList.toggle('active',toCam);
+  ['cv','lasso-canvas','axes-label'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=toCam?'none':'';});
+  const ovl=document.getElementById('overlay');if(ovl)ovl.style.display=toCam?'none':'';
+  if(!toCam){
+    _camActive=false;
+    if(_camAbortCtrl){_camAbortCtrl.abort();_camAbortCtrl=null;}
+    _camResetRender();
+    const noSig=document.getElementById('cam-no-signal');if(noSig)noSig.style.display='';
+    const btnC=document.getElementById('btn-cam-connect');if(btnC){btnC.innerHTML='&#128279; Connect';btnC.style.background='';}
+    const stEl=document.getElementById('cam-status');if(stEl){stEl.textContent='off';stEl.style.color='';}
+    const bsEl=document.getElementById('cam-bind-status');if(bsEl)bsEl.textContent='bind: 127.0.0.1:'+(document.getElementById('cam-port')?.value||'9870');
+  }else{
+    if(_ddsActive)ddsStop();
+  }
+}
+async function camConnect(){
+  if(_camActive){
+    _camActive=false;
+    if(_camAbortCtrl){_camAbortCtrl.abort();_camAbortCtrl=null;}
+    _camResetRender();
+    const noSig=document.getElementById('cam-no-signal');if(noSig)noSig.style.display='';
+    const btnC=document.getElementById('btn-cam-connect');if(btnC){btnC.innerHTML='&#128279; Connect';btnC.style.background='';}
+    const stEl=document.getElementById('cam-status');if(stEl){stEl.textContent='off';stEl.style.color='';}
+    document.getElementById('cam-bind-status').textContent='bind: 127.0.0.1:'+(document.getElementById('cam-port')?.value||'9870');
+    setStatus('Camera stopped','ok');
+    return;
+  }
+  const ip=(document.getElementById('cam-ip')?.value||'127.0.0.1').trim()||'127.0.0.1';
+  const port=parseInt(document.getElementById('cam-port')?.value||'9870',10);
+  if(!(port>=1&&port<=65535)){setStatus('Camera port invalid','err');return;}
+  try{
+    const r=await fetch('/api/camera_ensure?ip='+encodeURIComponent(ip)+'&port='+port);
+    const d=await r.json();
+    if(!d.started){setStatus('Camera connect failed: '+(d.error||'unknown'),'err');return;}
+    _camActive=true;_camLastId=-1;
+    _camResetRender();
+    const btnC=document.getElementById('btn-cam-connect');if(btnC){btnC.innerHTML='&#9209; Stop';btnC.style.background='#dc2626';}
+    const stEl=document.getElementById('cam-status');if(stEl){stEl.textContent='listening\u2026';stEl.style.color='#facc15';}
+    document.getElementById('cam-bind-status').textContent='udp: '+ip+':'+port+' (listening)';
+    setStatus('Camera listening on port '+port,'ok');
+    _logUI('camera','started udp:'+port,'ok');
+    _camPollLoop();
+  }catch(e){setStatus('Camera error: '+e.message,'err');}
+}
+async function _camPollLoop(){
+  while(_camActive&&_camMode){
+    if(_camAbortCtrl)_camAbortCtrl.abort();
+    _camAbortCtrl=new AbortController();
+    try{
+      const r=await fetch('/api/camera_frame?after='+_camLastId,{signal:_camAbortCtrl.signal,cache:'no-store'});
+      if(!r.ok){await new Promise(res=>setTimeout(res,300));continue;}
+      const ct=r.headers.get('content-type')||'';
+      if(ct.includes('json'))continue;
+      const fid=parseInt(r.headers.get('x-frame-id')||'-1',10);
+      const buf=await r.arrayBuffer();
+      if(buf.byteLength>0){_camLastId=fid;_camQueueFrame(fid,buf);}
+    }catch(e){
+      if(e.name==='AbortError')break;
+      if(!_camActive||!_camMode)break;
+      await new Promise(res=>setTimeout(res,300));
+    }
+  }
+  _camAbortCtrl=null;
+}
+// end Camera mode
 
 // ── Drag & drop .pcd files / folders onto the 3D canvas ─────────────────────────────
 (function(){
