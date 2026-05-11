@@ -132,3 +132,13 @@ canvas{display:block;width:100%;height:100%}
 .dir-item{padding:5px 10px;font-size:.75rem;cursor:pointer;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-radius:2px;border-bottom:1px solid #0d1525}
 .dir-item:hover{background:#1e293b;color:#e0e0e0}.dir-item.is-dir{color:#38bdf8}.dir-item.is-pcd{color:#34d399}
 #dir-modal-footer{display:flex;justify-content:flex-end;gap:6px}
+#mode-tabs{display:flex;gap:4px;padding:6px 8px;border-bottom:1px solid #1e2235;flex-shrink:0;background:#0d1120}
+.mode-tab{flex:1;background:#1e293b;color:#64748b;border:1px solid #334155;border-radius:5px;padding:5px 8px;font-size:.72rem;font-weight:600;cursor:pointer;transition:background .12s,color .12s,border-color .12s;white-space:nowrap}
+.mode-tab:hover{background:#273449;color:#cbd5e1}
+.mode-tab.active{background:#0369a1;color:#e0f2fe;border-color:#0369a1}
+#camera-wrap{display:none;position:absolute;inset:0;background:#0a0c12;align-items:center;justify-content:center;z-index:5;overflow:hidden}
+#camera-wrap.active{display:flex}
+#cam-fps-badge{display:none;position:absolute;top:16px;right:16px;z-index:7;padding:10px 14px;border-radius:12px;background:linear-gradient(135deg,rgba(236,72,153,.92),rgba(249,115,22,.92));color:#fff;font-size:1.35rem;font-weight:900;line-height:1;letter-spacing:.06em;box-shadow:0 10px 28px rgba(236,72,153,.28),0 0 0 1px rgba(255,255,255,.18) inset;pointer-events:none;text-shadow:0 1px 6px rgba(0,0,0,.45);font-variant-numeric:tabular-nums}
+#camera-canvas{display:none;width:100%;height:100%}
+#camera-img{max-width:100%;max-height:100%;object-fit:contain}
+#sec-camera>summary{background:rgba(236,72,153,.45);border-left:5px solid #ec4899;color:#fce7f3}
