@@ -465,6 +465,11 @@ canvas.addEventListener('mousemove',e=>{
   if(hit){waypoints[_dragIdx].x=hit.x;waypoints[_dragIdx].y=hit.y;waypoints[_dragIdx].z=wpZ;wpMarkers[_dragIdx].position.set(hit.x,hit.y,wpZ);rebuildTrajLine();recomputeQuaternions();}
 });
 canvas.addEventListener('mouseup',()=>{if(_dragActive){_dragActive=false;_dragIdx=-1;controls.enabled=!drawMode;}});
+// Double-click on viewer toggles Pick mode (when a point cloud is loaded and no other mode is active)
+canvas.addEventListener('dblclick',e=>{
+  if(!(pointCloud||_liveCloud)||drawMode||lassoMode||eraserMode)return;
+  if(typeof window.togglePick==='function'){window.togglePick();e.preventDefault();e.stopPropagation();}
+});
 
 let pickMarker=null;
 function showPickPopup(cx,cy,info){
@@ -484,14 +489,23 @@ canvas.addEventListener('click',e=>{
     _ray.setFromCamera(ndc,camera);const wh=_ray.intersectObjects(wpMarkers);
     if(wh.length>0){const wi=wpMarkers.indexOf(wh[0].object);if(wi>=0){showWpPopup(e.clientX,e.clientY,wi);return;}}
   }
-  if(pickMode&&pointCloud){
+  if(pickMode&&(pointCloud||_liveCloud)){
+    const target=pointCloud||_liveCloud;
     const rect=canvas.getBoundingClientRect();const ndc=new THREE.Vector2(((e.clientX-rect.left)/rect.width)*2-1,-((e.clientY-rect.top)/rect.height)*2+1);
-    _ray.params.Points.threshold=ptSize*0.05;
-    _ray.setFromCamera(ndc,camera);const hits=_ray.intersectObject(pointCloud);
+    // Screen-space adaptive threshold: ~6 px cursor radius mapped to world units at the
+    // current camera-target distance (essential for sparse live cloud where the static
+    // ptSize*0.05 threshold misses points far from the camera).
+    const camDist=Math.max(1,camera.position.distanceTo(controls.target));
+    const fovRad=(camera.fov||50)*Math.PI/180;
+    const wpp=2*Math.tan(fovRad/2)*camDist/Math.max(1,canvas.clientHeight||rect.height);
+    const baseThr=ptSize*0.05;
+    const screenThr=6*wpp;
+    _ray.params.Points.threshold=Math.max(baseThr,screenThr);
+    _ray.setFromCamera(ndc,camera);const hits=_ray.intersectObject(target);
     if(hits.length>0){
       // Pick the hit closest to the ray (screen click), not closest to camera
       const h=hits.reduce((a,b)=>((a.distanceToRay||0)<=(b.distanceToRay||0)?a:b));
-      const idx=h.index,pa=pointCloud.geometry.getAttribute('position');
+      const idx=h.index,pa=target.geometry.getAttribute('position');
       const px=pa.getX(idx),py=pa.getY(idx),pz=pa.getZ(idx);const info={};
       rawFields.forEach((fn,fi)=>{const raw=rawFloats?rawFloats[idx*rawNfields+fi]:undefined;if(raw!==undefined)info[fn]=(Math.abs(raw)<1e4&&raw%1!==0)?raw.toFixed(4):raw;});
       info['x']=px.toFixed(4);info['y']=py.toFixed(4);info['z']=pz.toFixed(4);info['index']=idx;info['dist']=h.distance.toFixed(3)+' m';
@@ -737,7 +751,7 @@ window._three={
   undoWaypoint:trajUndoInternal,clearWaypoints:trajClearInternal,getWaypoints:()=>[...waypoints],loadWaypoints:loadWaypointsArray,deleteWaypointAt(idx){deleteWaypointAt(idx);},setPickThreshold(t){_ray.params.Points.threshold=t;},
   applyFilter(zMin,zMax,mode){filterActive=true;filterZMin=zMin;filterZMax=zMax;filterMode=mode;if(rawFloats)replacePointCloud(buildPointCloud(rawFloats,rawNfields,rawFields,colorMode,{active:true,zMin,zMax,mode}));},
   resetFilter(){filterActive=false;if(rawFloats)replacePointCloud(buildPointCloud(rawFloats,rawNfields,rawFields,colorMode,null));},
-  setView(preset){if(preset==='free'){_setFreeMode(true);return;}if(_freeMode)_setFreeMode(false);if(!pointCloud)return;const box=pointCloud.geometry.boundingBox,center=new THREE.Vector3(),size=new THREE.Vector3();box.getCenter(center);box.getSize(size);const d=size.length()*1.5;controls.target.copy(center);switch(preset){case 'top':{const h=Math.max(size.x,size.y)*0.18+1.5;controls.target.set(0,0,0);camera.position.set(0,0,h);camera.up.set(1,0,0);break;}case 'front':{const d2=Math.max(size.y,size.z)*0.6+3;controls.target.set(0,0,0);camera.position.set(d2,0,0);camera.up.set(0,0,1);break;}case 'left':{const d2=Math.max(size.x,size.z)*0.6+3;controls.target.set(0,0,0);camera.position.set(0,d2,0);camera.up.set(0,0,1);break;}default:/* '3d' \u6062\u590d\u521d\u59cb\u89c6\u89d2 */camera.position.set(...INIT_CAM_POS);camera.up.set(0,0,1);controls.target.set(...INIT_CAM_TARGET);}controls.update();},
+  setView(preset){if(preset==='free'){_setFreeMode(true);return;}if(_freeMode)_setFreeMode(false);const hasStatic=pointCloud&&pointCloud.geometry&&pointCloud.geometry.boundingBox;const hasLive=!!_liveCloud;if(!hasStatic&&!hasLive)return;let center,size;if(hasStatic){const box=pointCloud.geometry.boundingBox;center=new THREE.Vector3();size=new THREE.Vector3();box.getCenter(center);box.getSize(size);}else{center=new THREE.Vector3(0,0,0);size=new THREE.Vector3(80,80,20);}controls.target.copy(center);switch(preset){case 'top':{const h=Math.max(size.x,size.y)*0.18+1.5;controls.target.set(0,0,0);camera.position.set(0,0,h);camera.up.set(1,0,0);break;}case 'front':{const d2=Math.max(size.y,size.z)*0.6+3;controls.target.set(0,0,0);camera.position.set(d2,0,0);camera.up.set(0,0,1);break;}case 'left':{const d2=Math.max(size.x,size.z)*0.6+3;controls.target.set(0,0,0);camera.position.set(0,d2,0);camera.up.set(0,0,1);break;}default:/* '3d' \u6062\u590d\u521d\u59cb\u89c6\u89d2 */camera.position.set(...INIT_CAM_POS);camera.up.set(0,0,1);controls.target.set(...INIT_CAM_TARGET);}controls.update();},
   resize(){resize();},
   isFreeMode(){return _freeMode;}
 };

@@ -14,7 +14,7 @@ python pcd_viewer.py
 python pcd_viewer.py --dir /path/to/pcd/files --port 8089 --ip 0.0.0.0
 
 # Customize DDS receiver (default: broadcast 255.255.255.255:9870)
-python pcd_viewer.py --udp-ip 239.255.0.1 --udp-port 9870 --dds-ws-port 8090
+python pcd_viewer.py --udp-ip 239.255.0.1 --udp-port 9870 --dds-ws-port 9090
 
 # Legacy positional form (backward compatible)
 python pcd_viewer.py /path/to/pcd/files 8089

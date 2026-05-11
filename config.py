@@ -46,7 +46,7 @@ class _Config:
         self.no_window: bool = False
         self.udp_host: str = '255.255.255.255'
         self.udp_port: int = 9870
-        self.dds_ws_port: int = 8090
+        self.dds_ws_port: int = 9090
 
     @property
     def traj_dir(self) -> str:
