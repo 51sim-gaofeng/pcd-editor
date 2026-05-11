@@ -247,6 +247,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_trajectory_post(body)
         elif parsed.path == '/api/save_pcd':
             self._handle_save_pcd(body)
+        elif parsed.path == '/api/traj_export':
+            self._handle_traj_export(body)
         else:
             self.send_error(404)
 
@@ -359,6 +361,32 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             try: self._json({'ok': False, 'error': str(e)})
             except Exception: pass
+
+    def _handle_traj_export(self, body: bytes):
+        """Open a native Save-As dialog and write the trajectory JSON to disk."""
+        from config import config
+        try:
+            import json as _json_mod
+            import tkinter as tk
+            from tkinter import filedialog
+            data = _json_mod.loads(body)
+            default_name = 'trajectory_' + __import__('datetime').datetime.now().strftime('%Y%m%d_%H%M%S') + '.json'
+            root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)
+            save_path = filedialog.asksaveasfilename(
+                title='保存轨迹文件',
+                initialdir=config.data_dir,
+                initialfile=default_name,
+                defaultextension='.json',
+                filetypes=[('JSON files', '*.json'), ('All files', '*.*')])
+            root.destroy()
+            if not save_path:
+                self._json({'ok': False, 'cancelled': True}); return
+            save_path = os.path.normpath(save_path)
+            with open(save_path, 'w', encoding='utf-8') as f:
+                _json_mod.dump(data, f, indent=2, ensure_ascii=False)
+            self._json({'ok': True, 'file': save_path})
+        except Exception as e:
+            self._json({'ok': False, 'error': str(e)})
 
     def _handle_pick_file(self, params):
         from config import config

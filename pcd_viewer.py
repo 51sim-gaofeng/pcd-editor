@@ -79,8 +79,19 @@ def main():
     # Auto-select a free port if the preferred one is already in use
     config.port = _find_free_port(config.port, bind_host)
 
-    ThreadingHTTPServer.allow_reuse_address = True
-    server = ThreadingHTTPServer((bind_host, config.port), Handler)
+    class _QuietServer(ThreadingHTTPServer):
+        """Suppress noisy ConnectionAbortedError / BrokenPipe tracebacks that
+        occur when long-poll camera/DDS clients disconnect normally."""
+        _QUIET_CODES = ('10053', '10054', 'ConnectionAborted', 'ConnectionReset', 'BrokenPipe')
+        def handle_error(self, request, client_address):
+            import traceback, sys as _sys
+            tb = traceback.format_exc()
+            if any(c in tb for c in self._QUIET_CODES):
+                return  # client disconnected normally — no printout
+            _sys.stderr.write(tb)
+
+    _QuietServer.allow_reuse_address = True
+    server = _QuietServer((bind_host, config.port), Handler)
     server.daemon_threads = True
     _disp_host = 'localhost' if bind_host in ('0.0.0.0', '127.0.0.1', '::') else bind_host
     url = f"http://{_disp_host}:{config.port}"

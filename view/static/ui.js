@@ -503,7 +503,24 @@ async function savePcd(){
   try{const r=await fetch('/api/save_pcd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:pts,fields:flds,filename:name})});const d=await r.json();if(d.ok){setStatus('Saved: '+d.file,'ok');refreshList();}else setStatus('Save error: '+d.error,'err');}catch(e){setStatus('save error','err');console.error(e);}
 }
 function trajUndo(){window._three.undoWaypoint();}function trajClear(){window._three.clearWaypoints();}
-function trajExport(){const pts=window._three.getWaypoints();if(!pts.length){alert('No waypoints.');return;}const a=document.createElement('a');a.href='data:application/json,'+encodeURIComponent(JSON.stringify({version:1,waypoints:pts},null,2));a.download='trajectory_'+new Date().toISOString().slice(0,19).replace(/:/g,'-')+'.json';a.click();}
+async function trajExport(){
+  const pts=window._three.getWaypoints();if(!pts.length){alert('No waypoints.');return;}
+  const payload={version:1,waypoints:pts};
+  // Try native save-as dialog via server (works in pywebview and browser)
+  try{
+    const r=await fetch('/api/traj_export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const d=await r.json();
+    if(d.cancelled)return;
+    if(d.ok){setStatus('Exported: '+d.file,'ok');return;}
+    throw new Error(d.error||'server error');
+  }catch(e){
+    // Fallback: browser download via <a> (headless / non-pywebview)
+    const a=document.createElement('a');
+    a.href='data:application/json,'+encodeURIComponent(JSON.stringify(payload,null,2));
+    a.download='trajectory_'+new Date().toISOString().slice(0,19).replace(/:/g,'-')+'.json';
+    a.click();
+  }
+}
 function trajImport(input){const file=input.files[0];if(!file)return;const reader=new FileReader();reader.onload=e=>{try{const obj=JSON.parse(e.target.result);const pts=Array.isArray(obj)?obj:obj.waypoints;if(!pts||!pts.length){alert('No waypoints found.');return;}window._three.loadWaypoints(pts);}catch(err){alert('JSON parse error: '+err.message);}};reader.readAsText(file);input.value='';}
 async function trajSaveServer(){const pts=window._three.getWaypoints();if(!pts.length){alert('No waypoints.');return;}const name=prompt('Filename:','traj_'+new Date().toISOString().slice(0,10));if(!name)return;const r=await fetch('/api/trajectory',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:1,waypoints:pts,name:name+'.json'})});const d=await r.json();if(d.ok){setStatus('Saved: '+d.file,'ok');refreshTrajList();}else setStatus('Save error: '+d.error,'err');}
 async function refreshTrajList(){const r=await fetch('/api/trajectory');const d=await r.json();const sel=document.getElementById('traj-server-list');sel.innerHTML='<option value="">&#8212; server trajs &#8212;</option>';(d.files||[]).forEach(f=>{const o=document.createElement('option');o.value=f;o.textContent=f;sel.appendChild(o);});}
