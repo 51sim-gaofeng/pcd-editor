@@ -100,10 +100,11 @@ jobs:
       - name: Package binary + samples zip (Linux)
         if: runner.os == 'Linux'
         run: |
-          # staging/ contains: pcd_viewer  +  sample/*.pcd
+          # staging/ contains: pcd_viewer  +  sample/*.pcd/*.ply
           mkdir -p staging/sample
           cp dist/pcd_viewer staging/
           cp sample/*.pcd staging/sample/
+          cp sample/*.ply staging/sample/
           cd staging
           zip -r ../dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip .
           cd ..

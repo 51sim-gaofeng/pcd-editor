@@ -5,7 +5,11 @@ __pycache__/
 _dropped/
 *.pcd
 !sample/*.pcd
+sample/*.ply
+!sample/garbage_truck1.ply
 trajectories/
 *.bin
 *.mtime
 .vscode/
+build/
+dist/

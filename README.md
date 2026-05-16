@@ -162,6 +162,7 @@ All HTTP routing. Static files under `/static/*` are served from `view/static/`.
 | POST   | `/api/trajectory`             | Save trajectory JSON                     |
 | POST   | `/api/save_pcd`               | Save edited point cloud                  |
 | POST   | `/api/upload_pcd`             | Receive drag-and-drop PCD upload         |
+| POST   | `/api/upload_ply`             | Receive drag-and-drop PLY upload         |
 
 ### View
 
@@ -283,4 +284,29 @@ pip install pandas python-lzf
 - **New 3D feature**: extend `window._three` in `view/static/three_view.js`.
 - **New DDS hook**: extend `model/dds_model.py`, expose via a new `/api/dds_*` route, wire UI into `view/static/ui.js`.
 - **Config change**: update `config.py`; all modules pick it up via the shared `config` singleton.
+
+---
+
+## Release SOP (all future versions)
+
+Use the same pipeline for every release (starting from `v0.1.4`):
+
+1. Update `README.md` (feature/API changes) and `RELEASE_NOTES.md` (new version section).
+2. Run tests:
+  - `python test_smoke.py`
+  - `python test_gs_smoke.py`
+3. Build package locally:
+  - `python -m PyInstaller pcd_viewer.spec --clean --noconfirm`
+4. Commit changes:
+  - `git add -A`
+  - `git commit -m "release: vX.Y.Z"`
+5. Push branch/tag:
+  - `git push origin main`
+  - `git tag vX.Y.Z`
+  - `git push origin vX.Y.Z`
+6. GitHub Actions workflow `.github/workflows/release.yml` builds/upload assets automatically.
+
+Notes:
+- `sample/garbage_truck1.ply` is included in sample assets and should be shipped together with other samples.
+- `test_gs_smoke.py` verifies 3DGS endpoints, including PLY upload.
 

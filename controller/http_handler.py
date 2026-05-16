@@ -18,6 +18,7 @@ from model.dds_model import (
     set_max_live_points,
 )
 from model.file_model import _preload_all, list_pcd_files
+from model.gaussian_model import list_gaussian_files
 from model.pcd_model import get_pcd_binary_cached, parse_pcd, save_pcd
 from model.trajectory_model import (
     list_trajectories,
@@ -232,6 +233,26 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/camera_rebind':
             self._handle_camera_rebind(params)
 
+        elif path == '/api/gaussian_files':
+            try:
+                self._json({'files': list_gaussian_files()})
+            except Exception as e:
+                self._json({'files': [], 'error': str(e)})
+
+        elif path in ('/api/ply', '/api/ply_abs'):
+            fpath_raw = params.get('file', [''])[0]
+            if not fpath_raw:
+                self._json({'error': 'no file specified'}); return
+            if path == '/api/ply':
+                full = os.path.realpath(os.path.join(config.data_dir, fpath_raw))
+                if not full.startswith(os.path.realpath(config.data_dir)):
+                    self._json({'error': 'forbidden'}); return
+            else:
+                full = os.path.realpath(fpath_raw)
+            if not os.path.isfile(full):
+                self._json({'error': 'not found'}); return
+            self._serve_ply(full)
+
         else:
             self.send_error(404)
 
@@ -241,6 +262,8 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == '/api/upload_pcd':
             self._handle_upload_pcd(); return
+        if parsed.path == '/api/upload_ply':
+            self._handle_upload_ply(); return
         length = int(self.headers.get('Content-Length', 0))
         body   = self.rfile.read(length)
         if parsed.path == '/api/trajectory':
@@ -253,6 +276,25 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     # ── route handlers ─────────────────────────────────────────────────────────
+
+    def _serve_ply(self, full_path: str):
+        """Stream a PLY file as binary with chunked encoding (handles large files)."""
+        try:
+            size = os.path.getsize(full_path)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Length', str(size))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            CHUNK = 65536
+            with open(full_path, 'rb') as f:
+                while True:
+                    chunk = f.read(CHUNK)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+            pass
 
     def _handle_browse(self, params):
         from config import config
@@ -347,6 +389,52 @@ class Handler(BaseHTTPRequestHandler):
                 fname = _safe_part(os.path.basename(raw_name))
                 if not fname.lower().endswith('.pcd'):
                     fname += '.pcd'
+                full = os.path.join(drop_dir, fname)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            base, ext = os.path.splitext(full)
+            n = 1
+            while os.path.exists(full):
+                full = f'{base}_{n}{ext}'; n += 1
+            data = self.rfile.read(length)
+            with open(full, 'wb') as f:
+                f.write(data)
+            rel = os.path.relpath(full, config.data_dir).replace('\\', '/')
+            self._json({'ok': True, 'file': rel, 'abs': full, 'size': length})
+        except Exception as e:
+            try: self._json({'ok': False, 'error': str(e)})
+            except Exception: pass
+
+    def _handle_upload_ply(self):
+        from config import config
+        from urllib.parse import unquote
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            if length <= 0:
+                self._json({'error': 'empty upload'}); return
+            raw_name = self.headers.get('X-Filename', '') or 'dropped.ply'
+            rel_in   = self.headers.get('X-Relpath', '') or ''
+            try: raw_name = unquote(raw_name)
+            except Exception: pass
+            try: rel_in   = unquote(rel_in)
+            except Exception: pass
+
+            def _safe_part(s):
+                s = ''.join(c for c in s if c.isalnum() or c in '._- ')
+                return s.strip(' .') or 'x'
+
+            drop_dir = os.path.join(config.data_dir, '_dropped')
+            if rel_in:
+                parts = [p for p in rel_in.replace('\\', '/').split('/') if p and p != '..']
+                parts = [_safe_part(p) for p in parts]
+                if not parts:
+                    parts = [_safe_part(os.path.basename(raw_name)) or 'dropped.ply']
+                if not parts[-1].lower().endswith('.ply'):
+                    parts[-1] += '.ply'
+                full = os.path.join(drop_dir, *parts)
+            else:
+                fname = _safe_part(os.path.basename(raw_name))
+                if not fname.lower().endswith('.ply'):
+                    fname += '.ply'
                 full = os.path.join(drop_dir, fname)
             os.makedirs(os.path.dirname(full), exist_ok=True)
             base, ext = os.path.splitext(full)

@@ -1,49 +1,65 @@
-import * as THREE from 'three';
+﻿import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GaussianView } from './gaussian_view.js';
 
 const canvas=document.getElementById('cv');
 const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
 renderer.setPixelRatio(devicePixelRatio);renderer.setClearColor(0x0a0c12);
 const scene=new THREE.Scene();
 const camera=new THREE.PerspectiveCamera(60,1,0.01,10000);
-// 初始视口常量：x 朝前，俯角 ≈10°。修改这里后 resetCamera 与首帧加载都跳同步。
+let _sceneAxesRoot=null;
+// 鍒濆瑙嗗彛甯搁噺锛歺 鏈濆墠锛屼刊瑙?鈮?0掳銆備慨鏀硅繖閲屽悗 resetCamera 涓庨甯у姞杞介兘璺冲悓姝ャ€?
 const INIT_CAM_POS=[-20,0,8], INIT_CAM_TARGET=[30,0,0];
 camera.position.set(...INIT_CAM_POS);camera.up.set(0,0,1);
 const controls=new OrbitControls(camera,canvas);
 controls.target.set(...INIT_CAM_TARGET);
 controls.enableDamping=true;controls.dampingFactor=0.08;controls.screenSpacePanning=true;
-// ── Coordinate axes: solid cylinder shafts + cone heads (linewidth>1 is a no-op in WebGL) ─
+// 鈹€鈹€ Coordinate axes: solid cylinder shafts + cone heads (linewidth>1 is a no-op in WebGL) 鈹€
 (function(){
   const L=2.0;            // shaft length
-  const R=0.045;          // shaft radius (粗细)
+  const R=0.045;          // shaft radius (绮楃粏)
   const headLen=0.32;     // cone head length
   const headR=0.12;       // cone head radius
-  const segs=24;          // 圆柱/圆锥分段数
+  const segs=24;          // 鍦嗘煴/鍦嗛敟鍒嗘鏁?
   const axes=[
     {dir:new THREE.Vector3(1,0,0),color:0xef4444},  // X red
     {dir:new THREE.Vector3(0,1,0),color:0x22c55e},  // Y green
     {dir:new THREE.Vector3(0,0,1),color:0x3b82f6},  // Z blue
   ];
   const upY=new THREE.Vector3(0,1,0);
+  _sceneAxesRoot=new THREE.Group();
+  _sceneAxesRoot.name='scene-axes-root';
+  _sceneAxesRoot.renderOrder=10000;
   axes.forEach(({dir,color})=>{
     const mat=new THREE.MeshBasicMaterial({color});
-    // shaft：默认沿 Y 轴，从 (0,0,0) 起；移动到 (0,L/2,0) 让一端在原点
+    // shaft锛氶粯璁ゆ部 Y 杞达紝浠?(0,0,0) 璧凤紱绉诲姩鍒?(0,L/2,0) 璁╀竴绔湪鍘熺偣
     const shaftGeo=new THREE.CylinderGeometry(R,R,L,segs,1,false);
     shaftGeo.translate(0,L/2,0);
     const shaft=new THREE.Mesh(shaftGeo,mat);
-    // head：圆锥默认沿 Y 轴，底面在 y=0，顶点在 y=headLen
+    // head锛氬渾閿ラ粯璁ゆ部 Y 杞达紝搴曢潰鍦?y=0锛岄《鐐瑰湪 y=headLen
     const headGeo=new THREE.ConeGeometry(headR,headLen,segs);
     headGeo.translate(0,L+headLen/2,0);
     const head=new THREE.Mesh(headGeo,mat);
     const grp=new THREE.Group();grp.add(shaft);grp.add(head);
-    // 把默认的 +Y 朝向旋转到目标方向
+    grp.renderOrder=10000;
+    grp.traverse(o=>{
+      if(o.isMesh||o.isLine){
+        o.renderOrder=10000;
+        if(o.material){
+          o.material.depthTest=false;
+          o.material.depthWrite=false;
+        }
+      }
+    });
+    // 鎶婇粯璁ょ殑 +Y 鏈濆悜鏃嬭浆鍒扮洰鏍囨柟鍚?
     grp.quaternion.setFromUnitVectors(upY,dir.clone().normalize());
-    scene.add(grp);
+    _sceneAxesRoot.add(grp);
   });
-  // 原点小球作为视觉锚点
+  // 鍘熺偣灏忕悆浣滀负瑙嗚閿氱偣
   const originGeo=new THREE.SphereGeometry(R*1.6,16,12);
-  const originMat=new THREE.MeshBasicMaterial({color:0xffffff});
-  scene.add(new THREE.Mesh(originGeo,originMat));
+  const originMat=new THREE.MeshBasicMaterial({color:0xffffff,depthTest:false,depthWrite:false});
+  _sceneAxesRoot.add(new THREE.Mesh(originGeo,originMat));
+  scene.add(_sceneAxesRoot);
 })();
 let grid=null,gridStyle='square',gridLabels=null;
 let _LABEL_STEP=10; // meters between coordinate labels (configurable via _grid.setLabelStep)
@@ -94,7 +110,7 @@ function _buildSquareGrid(size,divisions,colorMain,colorSub){
 }
 
 function _buildCircleGrid(radius,step,colorMain,colorSub){
-  // Concentric rings + radial spokes (every 30°).
+  // Concentric rings + radial spokes (every 30掳).
   const grp=new THREE.Group();
   const segs=128;
   const ringMatMain=new THREE.LineBasicMaterial({color:colorMain,transparent:true,opacity:0.85});
@@ -112,7 +128,7 @@ function _buildCircleGrid(radius,step,colorMain,colorSub){
     const isMain=(Math.abs(r%_LABEL_STEP)<1e-6)||(i===nRings);
     grp.add(new THREE.LineLoop(geo,isMain?ringMatMain:ringMatSub));
   }
-  // Radial spokes every 30°.
+  // Radial spokes every 30掳.
   const spokeMat=new THREE.LineBasicMaterial({color:colorSub,transparent:true,opacity:0.5});
   for(let deg=0;deg<360;deg+=30){
     const a=deg*Math.PI/180;
@@ -126,7 +142,7 @@ function _buildCircleGrid(radius,step,colorMain,colorSub){
 }
 
 function _buildAxisLabels(extent){
-  // Place +X / -X / +Y / -Y labels every _LABEL_STEP meters out to ±extent.
+  // Place +X / -X / +Y / -Y labels every _LABEL_STEP meters out to 卤extent.
   const grp=new THREE.Group();
   const colX='#fca5a5';   // x: warm
   const colY='#86efac';   // y: cool-green
@@ -168,10 +184,10 @@ window._grid={
 const wrap=document.getElementById('canvas-wrap');
 const lc=document.getElementById('lasso-canvas');
 const lctx=lc.getContext('2d');
-function resize(){const w=wrap.clientWidth,h=wrap.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();lc.width=w;lc.height=h;}
+function resize(){const w=wrap.clientWidth,h=wrap.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();lc.width=w;lc.height=h;window._gaussian?.onResize?.(w,h);}
 new ResizeObserver(resize).observe(wrap);resize();
 
-// ── Free-fly controls (custom Z-up, RMB to look) ─────────────────────────
+// 鈹€鈹€ Free-fly controls (custom Z-up, RMB to look) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 let _freeMode=false;
 const _flyKeys={w:false,a:false,s:false,d:false,q:false,e:false,shift:false};
 let _flySpeed=8;          // units per second
@@ -196,7 +212,7 @@ function _flyInitFromCamera(){
   _flyApplyOrientation();
 }
 
-// rotate while right mouse button is held — no PointerLock (avoids 100ms acquisition lag + center-warp jump)
+// rotate while right mouse button is held 鈥?no PointerLock (avoids 100ms acquisition lag + center-warp jump)
 let _flyRotating=false, _flyLastX=0, _flyLastY=0;
 function _onMouseMove(e){
   if(!_freeMode||!_flyRotating)return;
@@ -236,7 +252,7 @@ function _setFreeMode(on){
     controls.enabled=false;
     document.getElementById('free-hint').style.display='block';
     _flyInitFromCamera();
-    // do NOT lock pointer here — only lock while right mouse is held
+    // do NOT lock pointer here 鈥?only lock while right mouse is held
   } else {
     document.getElementById('free-hint').style.display='none';
     _flyRotating=false; canvas.style.cursor='default';
@@ -281,7 +297,7 @@ function _flyTick(){
   if(u)camera.position.z+=u*spd;
 }
 
-// Rolling stats for renderer.render() — exposed so DDS heartbeat can show GPU cost.
+// Rolling stats for renderer.render() 鈥?exposed so DDS heartbeat can show GPU cost.
 let _renderMsEwma=0,_renderCount=0;
 function animate(){
   requestAnimationFrame(animate);
@@ -289,6 +305,7 @@ function animate(){
   if(!_freeMode)controls.update();
   const t0=performance.now();
   renderer.render(scene,camera);
+  window._gaussian?.tick?.(t0);
   const dt=performance.now()-t0;
   _renderMsEwma=_renderMsEwma>0?(_renderMsEwma*0.9+dt*0.1):dt;
   _renderCount++;
@@ -296,9 +313,30 @@ function animate(){
 }
 animate();
 
+// 鈹€鈹€ Gaussian Splatting public API 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+let _gaussianView = null;
+window._gaussian = {
+        async loadBuffer(buffer, filename, options) { return _gaussianView.loadBuffer(buffer, filename, options||{}); },
+  async load(url, filename, options) {
+    if (!_gaussianView) {
+      _gaussianView = new GaussianView(renderer, camera, scene, controls);
+    }
+    return _gaussianView.loadFile(url, filename, options||{});
+  },
+  dispose() {
+    if (_gaussianView) { _gaussianView.dispose(); _gaussianView = null; }
+  },
+  tick(now) { _gaussianView?.tick(now); },
+  getSplatCount() { return _gaussianView?.getLoadedSplats() ?? 0; },
+  getFps()        { return _gaussianView?.getFps() ?? 0; },
+  setSplatScale(s){ _gaussianView?.setSplatScale(s); },
+  setShDegree(d)  { _gaussianView?.setShDegree(d); },
+  onResize(w, h)  { _gaussianView?.onResize(w, h); },
+};
+
 let pointCloud=null,rawPoints=[],rawFields=[],ptSize=1.5,colorMode='height';
 let flipX=1,flipY=1,flipZ=1;
-let _lockedZRange=null;  // {mn, mx} — locked height color range, null=auto per-frame
+let _lockedZRange=null;  // {mn, mx} 鈥?locked height color range, null=auto per-frame
 function lockZRange(mn,mx){_lockedZRange={mn,mx};document.getElementById('z-lock-btn').innerHTML='&#128274; Unlock Z';document.getElementById('z-lock-indicator').textContent='Z: '+mn.toFixed(1)+' ~ '+mx.toFixed(1);}
 function unlockZRange(){_lockedZRange=null;document.getElementById('z-lock-btn').innerHTML='&#128275; Lock Z';document.getElementById('z-lock-indicator').textContent='auto';}
 function toggleZLock(){
@@ -433,7 +471,7 @@ function showWpPopup(cx,cy,idx){
   const wp=waypoints[idx];window._wpPopupIdx=idx;
   const f4=v=>(typeof v==='number')?v.toFixed(4):String(v);
   const yd=(Math.atan2(2*(wp.q_w*wp.q_z),1-2*wp.q_z*wp.q_z)*180/Math.PI).toFixed(1);
-  const rows=[['#',idx],['X','<span style="color:#ef4444">'+f4(wp.x)+'</span>'],['Y','<span style="color:#22c55e">'+f4(wp.y)+'</span>'],['Z','<span style="color:#3b82f6">'+f4(wp.z)+'</span>'],['q_x',f4(wp.q_x)],['q_y',f4(wp.q_y)],['q_z',f4(wp.q_z)],['q_w',f4(wp.q_w)],['yaw°',yd]];
+  const rows=[['#',idx],['X','<span style="color:#ef4444">'+f4(wp.x)+'</span>'],['Y','<span style="color:#22c55e">'+f4(wp.y)+'</span>'],['Z','<span style="color:#3b82f6">'+f4(wp.z)+'</span>'],['q_x',f4(wp.q_x)],['q_y',f4(wp.q_y)],['q_z',f4(wp.q_z)],['q_w',f4(wp.q_w)],['yaw掳',yd]];
   document.getElementById('wp-popup-content').innerHTML=rows.map(([k,v])=>'<div><span style="color:#94a3b8;min-width:46px;display:inline-block">'+k+'</span>'+v+'</div>').join('');
   const pp=document.getElementById('wp-popup');pp.style.display='block';
   const mr=wrap.getBoundingClientRect();let lx=cx-mr.left+14,ly=cy-mr.top+14;
@@ -570,14 +608,21 @@ function _floatsFromRawPoints(){
   for(let i=0;i<rawPoints.length;i++){const b=i*rawNfields;for(let j=0;j<rawNfields;j++)rawFloats[b+j]=rawPoints[i][j]||0;}
 }
 function replacePointCloud(pc){if(pointCloud){scene.remove(pointCloud);pointCloud.geometry.dispose();}pointCloud=pc;scene.add(pointCloud);}
+function clearPointCloudInternal(){
+  if(pointCloud){scene.remove(pointCloud);pointCloud.geometry.dispose();if(pointCloud.material)pointCloud.material.dispose();pointCloud=null;}
+  if(_liveCloud){scene.remove(_liveCloud);_liveCloud.geometry.dispose();_liveCloud.material.dispose();_liveCloud=null;_liveCapN=0;}
+  rawFloats=null;rawNfields=0;rawFields=[];rawPoints=[];displayedToRaw=null;
+  filterActive=false;filterZMin=-Infinity;filterZMax=Infinity;filterMode='keep';
+  clearSelectionInternal();
+}
 
-// ── DDS live fast-path: pre-allocated GPU buffers, no geometry recreate ────
+// 鈹€鈹€ DDS live fast-path: pre-allocated GPU buffers, no geometry recreate 鈹€鈹€鈹€鈹€
 let _liveCloud=null,_livePosArr=null,_liveColArr=null,_liveCapN=0;
 // Carry color range across frames so the per-frame loop is single-pass.
 // First frame still scans; subsequent frames color with the previous frame's
 // range, then the loop also accumulates fresh min/max for the next frame.
 let _liveLastZMn=Infinity,_liveLastZMx=-Infinity,_liveLastIMn=Infinity,_liveLastIMx=-Infinity;
-// 1024-entry LUT for heightColor — replaces 5-stop interpolation per point.
+// 1024-entry LUT for heightColor 鈥?replaces 5-stop interpolation per point.
 const _LUT_SIZE=1024;
 const _liveColorLUT=(function(){
   const lut=new Float32Array(_LUT_SIZE*3);
@@ -671,7 +716,7 @@ function _updateLiveBuffers(floats,nfields,fields,mode){
       col[o]=lut[lo];col[o+1]=lut[lo+1];col[o+2]=lut[lo+2];
     }
   }else{
-    // Solid color path — no LUT lookup, no min/max for color, but still track z/i for next frame.
+    // Solid color path 鈥?no LUT lookup, no min/max for color, but still track z/i for next frame.
     for(let i=0;i<np;i++){
       const b=i*nfields;const x=floats[b+xi],y=floats[b+yi],z=floats[b+zi];
       const o=i*3;pos[o]=x*fx;pos[o+1]=y*fy;pos[o+2]=z*fz;
@@ -717,9 +762,9 @@ window._three={
   loadPoints(floats,nfields,fields){
     rawFloats=floats;rawNfields=nfields;rawFields=fields;rawPoints=null;  // rawPoints built lazily
     // Reset Z lock when loading a new sequence (color mode change or fresh load)
-    // Don't reset mid-playback — _lockedZRange persists across frames intentionally
+    // Don't reset mid-playback 鈥?_lockedZRange persists across frames intentionally
     clearSelectionInternal();replacePointCloud(buildPointCloud(floats,nfields,fields,colorMode,getFilt()));
-    if(!_camInit){_camInit=true;}  // 保留首帧标记，但不再覆盖初始视角
+    if(!_camInit){_camInit=true;}  // 淇濈暀棣栧抚鏍囪锛屼絾涓嶅啀瑕嗙洊鍒濆瑙嗚
   },
   resetCamInit(){_camInit=false;},
   setPointSize(s){ptSize=s;if(pointCloud)pointCloud.material.size=s*0.05;if(_liveCloud)_liveCloud.material.size=s*0.05;if(selectionCloud)selectionCloud.material.size=s*0.08;},
@@ -732,12 +777,13 @@ window._three={
   setEraserMode(on){setEraserModeInternal(on);},
   clearSelection(){clearSelectionInternal();},
   hasCloud(){return rawFloats&&rawFloats.length>0;},
-  // ── DDS live fast-path ────────────────────────────────────────────────
+  // 鈹€鈹€ DDS live fast-path 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   updateLive(floats,nfields,fields){
     rawFloats=floats;rawNfields=nfields;rawFields=fields;rawPoints=null;
     _updateLiveBuffers(floats,nfields,fields,colorMode);
     if(!_camInit){_camInit=true;}
   },
+  clearCloud(){clearPointCloudInternal();},
   exitLiveMode(){
     if(_liveCloud){scene.remove(_liveCloud);_liveCloud.geometry.dispose();_liveCloud.material.dispose();_liveCloud=null;_liveCapN=0;}
     _liveLastZMn=Infinity;_liveLastZMx=-Infinity;_liveLastIMn=Infinity;_liveLastIMx=-Infinity;
@@ -751,7 +797,42 @@ window._three={
   undoWaypoint:trajUndoInternal,clearWaypoints:trajClearInternal,getWaypoints:()=>[...waypoints],loadWaypoints:loadWaypointsArray,deleteWaypointAt(idx){deleteWaypointAt(idx);},setPickThreshold(t){_ray.params.Points.threshold=t;},
   applyFilter(zMin,zMax,mode){filterActive=true;filterZMin=zMin;filterZMax=zMax;filterMode=mode;if(rawFloats)replacePointCloud(buildPointCloud(rawFloats,rawNfields,rawFields,colorMode,{active:true,zMin,zMax,mode}));},
   resetFilter(){filterActive=false;if(rawFloats)replacePointCloud(buildPointCloud(rawFloats,rawNfields,rawFields,colorMode,null));},
-  setView(preset){if(preset==='free'){_setFreeMode(true);return;}if(_freeMode)_setFreeMode(false);const hasStatic=pointCloud&&pointCloud.geometry&&pointCloud.geometry.boundingBox;const hasLive=!!_liveCloud;if(!hasStatic&&!hasLive)return;let center,size;if(hasStatic){const box=pointCloud.geometry.boundingBox;center=new THREE.Vector3();size=new THREE.Vector3();box.getCenter(center);box.getSize(size);}else{center=new THREE.Vector3(0,0,0);size=new THREE.Vector3(80,80,20);}controls.target.copy(center);switch(preset){case 'top':{const h=Math.max(size.x,size.y)*0.18+1.5;controls.target.set(0,0,0);camera.position.set(0,0,h);camera.up.set(1,0,0);break;}case 'front':{const d2=Math.max(size.y,size.z)*0.6+3;controls.target.set(0,0,0);camera.position.set(d2,0,0);camera.up.set(0,0,1);break;}case 'left':{const d2=Math.max(size.x,size.z)*0.6+3;controls.target.set(0,0,0);camera.position.set(0,d2,0);camera.up.set(0,0,1);break;}default:/* '3d' \u6062\u590d\u521d\u59cb\u89c6\u89d2 */camera.position.set(...INIT_CAM_POS);camera.up.set(0,0,1);controls.target.set(...INIT_CAM_TARGET);}controls.update();},
+  setView(preset){
+    if(preset==='free'){_setFreeMode(true);return;}
+    if(_freeMode)_setFreeMode(false);
+    const hasStatic=pointCloud&&pointCloud.geometry&&pointCloud.geometry.boundingBox;
+    const hasLive=!!_liveCloud;
+    const hasGs=!!(_gaussianView&&_gaussianView.getLoadedSplats&&_gaussianView.getLoadedSplats()>0);
+    if(!hasStatic&&!hasLive&&!hasGs)return;
+    let center,size;
+    if(hasStatic){
+      const box=pointCloud.geometry.boundingBox;center=new THREE.Vector3();size=new THREE.Vector3();box.getCenter(center);box.getSize(size);
+    }else if(hasGs){
+      center=controls.target.clone();size=new THREE.Vector3(80,80,20);
+    }else{
+      center=new THREE.Vector3(0,0,0);size=new THREE.Vector3(80,80,20);
+    }
+    controls.target.copy(center);
+    switch(preset){
+      case 'top':{
+        const h=Math.max(size.x,size.y)*0.18+1.5;controls.target.set(0,0,0);camera.position.set(0,0,h);camera.up.set(1,0,0);break;
+      }
+      case 'front':{
+        const d2=Math.max(size.y,size.z)*0.6+3;controls.target.set(center.x,center.y,center.z);camera.position.set(center.x+d2,center.y,center.z);camera.up.set(0,0,1);break;
+      }
+      case 'left':{
+        const d2=Math.max(size.x,size.z)*0.6+3;controls.target.set(center.x,center.y,center.z);camera.position.set(center.x,center.y+d2,center.z);camera.up.set(0,0,1);break;
+      }
+      default:/* '3d' 鎭㈠鍒濆瑙嗚 */camera.position.set(...INIT_CAM_POS);camera.up.set(0,0,1);controls.target.set(...INIT_CAM_TARGET);
+    }
+    controls.update();
+  },
   resize(){resize();},
-  isFreeMode(){return _freeMode;}
+  isFreeMode(){return _freeMode;},
+  setSceneAxesVisible(on){
+    if(_sceneAxesRoot)_sceneAxesRoot.visible=!!on;
+  }
 };
+
+
+

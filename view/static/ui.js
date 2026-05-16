@@ -1,4 +1,4 @@
-// ── Timing log & log panel ──────────────────────────────────────────────────
+﻿// 鈹€鈹€ Timing log & log panel 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 let _logCollapsed=false;
 const _LOG_MAX=200;
 function _appendLog(html){
@@ -23,8 +23,8 @@ function _tlogFrame(fetchMs,parseMs,renderMs,npts,fromCache,filename){
 }
 function clearLog(){const el=document.getElementById('log-entries');if(el)el.innerHTML='';}
 
-// ── Generic UI activity log ───────────────────────────────────────────────
-// 把所有用户操作 / 状态变化都记录到右下角 log 面板
+// 鈹€鈹€ Generic UI activity log 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 鎶婃墍鏈夌敤鎴锋搷浣?/ 鐘舵€佸彉鍖栭兘璁板綍鍒板彸涓嬭 log 闈㈡澘
 function _logUI(action, info, level){
   const now=new Date().toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
   const ms =('00'+new Date().getMilliseconds()).slice(-3);
@@ -35,7 +35,7 @@ function _logUI(action, info, level){
     +(info!=null&&info!==''?'  <span class="le-total">'+String(info).replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))+'</span>':'');
   _appendLog(html);
 }
-// 自动捕获所有侧栏按钮点击 / select 变化 / checkbox 切换 / range/number 输入
+// 鑷姩鎹曡幏鎵€鏈変晶鏍忔寜閽偣鍑?/ select 鍙樺寲 / checkbox 鍒囨崲 / range/number 杈撳叆
 (function(){
   function nodeLabel(el){
     if(!el)return '?';
@@ -57,7 +57,7 @@ function _logUI(action, info, level){
     else if(el.type==='checkbox')  _logUI('toggle', nodeLabel(el)+' = '+(el.checked?'on':'off'));
     else if(el.type==='number')    _logUI('input',  nodeLabel(el)+' = '+el.value);
   },true);
-  // range slider 在松开时记一次（避免拖动刷屏）
+  // range slider 鍦ㄦ澗寮€鏃惰涓€娆★紙閬垮厤鎷栧姩鍒峰睆锛?
   document.addEventListener('change',e=>{
     if(e.target.type==='range'&&inSidebar(e.target))_logUI('slider', nodeLabel(e.target)+' = '+e.target.value);
   },true);
@@ -72,7 +72,7 @@ function toggleLogPanel(){
   setTimeout(()=>p.classList.remove('collapsing'),200);
   if(window._three&&window._three.resize)window._three.resize();
 }
-// ── Log panel drag-to-resize ───────────────────────────────────────────
+// 鈹€鈹€ Log panel drag-to-resize 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 (function(){
   const bar=document.getElementById('log-resize-bar');
   const panel=document.getElementById('log-panel');
@@ -92,9 +92,9 @@ function toggleLogPanel(){
     document.addEventListener('mouseup',onUp);
   });
 })();
-// ── Frame cache & prefetch ───────────────────────────────────────────────────
+// 鈹€鈹€ Frame cache & prefetch 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 const _frameCache=new Map();
-const _fetchPromises=new Map();  // in-flight fetch promises — shared by prefetch & loadFile
+const _fetchPromises=new Map();  // in-flight fetch promises 鈥?shared by prefetch & loadFile
 const _PREFETCH_AHEAD=8,_CACHE_MAX=40;
 function _cacheEvict(){while(_frameCache.size>_CACHE_MAX){_frameCache.delete(_frameCache.keys().next().value);}}
 // Central fetch: deduplicates concurrent requests for the same key
@@ -117,7 +117,7 @@ function prefetchFile(path){
   if(!path||_frameCache.has(path)||_fetchPromises.has(path))return;
   _fetchBuf('/api/pcd_binary?file='+encodeURIComponent(path),path).catch(()=>{});
 }
-// ── Playback engine ──────────────────────────────────────────────────────────
+// 鈹€鈹€ Playback engine 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 let _playFiles=[],_playCur=0,_playTotal=0,_playFps=10;
 let _playRunning=false,_playGen=0;
 function _playGoto(idx){
@@ -159,6 +159,8 @@ function playToggle(){
 }
 document.addEventListener('keydown',function(e){
   if(e.key==='Escape'){exitAllModes();return;}
+  const tabGs=document.getElementById('tab-gs');
+  if(tabGs&&tabGs.classList.contains('active'))return;
   const tag=document.activeElement.tagName;
   if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT')return;
   if(_ddsActive){
@@ -170,11 +172,11 @@ document.addEventListener('keydown',function(e){
   else if(e.key===' '){playToggle();e.preventDefault();}
 });
 // end playback
-// ── DDS Live mode ────────────────────────────────────────────────────────────
+// 鈹€鈹€ DDS Live mode 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 let _ddsActive=false,_ddsLastId=-1,_ddsStatusPoll=null,_ddsPaused=false;
-// 最新收到但尚未渲染的帧（fetch 写入，rAF 消费）
+// 鏈€鏂版敹鍒颁絾灏氭湭娓叉煋鐨勫抚锛坒etch 鍐欏叆锛宺AF 娑堣垂锛?
 let _ddsPending=null; // {floats, nfields, fields, fid, npoints} | null
-// Foxglove 风格：渲染预算（固定帧率上限）+ 自适应点数预算
+// Foxglove 椋庢牸锛氭覆鏌撻绠楋紙鍥哄畾甯х巼涓婇檺锛? 鑷€傚簲鐐规暟棰勭畻
 let _ddsRenderFpsCap=20,_ddsRenderMinInterval=1000/20,_ddsLastRenderAt=0;
 let _ddsAdaptive=true,_ddsRenderMsEwma=0,_ddsAdaptCooldownUntil=0;
 let _ddsCurrentMaxPoints=60000,_ddsAutoMinPoints=10000,_ddsAutoMaxPoints=1000000;
@@ -186,7 +188,7 @@ let _ddsWorkerParseMsTotal=0,_ddsLastWorkerParseMsTotal=0;
 let _ddsTransitMsTotal=0,_ddsLastTransitMsTotal=0,_ddsTransitSamples=0,_ddsLastTransitSamples=0;
 let _ddsWorkerOpenCount=0,_ddsWorkerCloseCount=0;
 let _ddsWorker=null;
-// FPS meter（渲染侧）
+// FPS meter锛堟覆鏌撲晶锛?
 let _ddsFpsCnt=0,_ddsFpsT0=performance.now(),_ddsFpsLast='';
 function _ddsFpsTick(){
   _ddsFpsCnt++;
@@ -206,7 +208,7 @@ function ddsSetMaxPointsFromUI(v){_ddsSetMaxPoints(v,false);}
 function ddsSetRenderFpsFromUI(v){
   const fps=Math.max(1,Math.min(30,parseInt(v,10)||10));
   _ddsRenderFpsCap=fps;
-  // 留 5% 余量，避免与源帧率 (例如 10 fps) 临界对齐时因抖动漏帧 → 实测 9 fps。
+  // 鐣?5% 浣欓噺锛岄伩鍏嶄笌婧愬抚鐜?(渚嬪 10 fps) 涓寸晫瀵归綈鏃跺洜鎶栧姩婕忓抚 鈫?瀹炴祴 9 fps銆?
   _ddsRenderMinInterval=(1000/fps)*0.95;
   const el=document.getElementById('dds-render-fps-val');if(el)el.textContent=String(fps);
 }
@@ -318,7 +320,7 @@ function _ddsAdaptiveBudget(renderMs){
     _ddsAdaptCooldownUntil=now+2200;
   }
 }
-// rAF 驱动的渲染循环：只消费 _ddsPending，与 fetch 完全解耦
+// rAF 椹卞姩鐨勬覆鏌撳惊鐜細鍙秷璐?_ddsPending锛屼笌 fetch 瀹屽叏瑙ｈ€?
 function _ddsRenderTick(){
   if(!_ddsActive)return;
   if(_ddsPaused){requestAnimationFrame(_ddsRenderTick);return;}
@@ -399,8 +401,8 @@ function ddsToggle(){
   ddsToggleAdaptive(document.getElementById('dds-adaptive')?.checked!==false);
   _ddsSetMaxPoints(document.getElementById('dds-max-pts')?.value||_ddsCurrentMaxPoints,true);
   setStatus('DDS Live: waiting for frames\u2026','loading');
-  requestAnimationFrame(_ddsRenderTick); // 启动渲染循环
-  _ddsStartWorker();                     // 启动 worker WebSocket 拉流/解析
+  requestAnimationFrame(_ddsRenderTick); // 鍚姩娓叉煋寰幆
+  _ddsStartWorker();                     // 鍚姩 worker WebSocket 鎷夋祦/瑙ｆ瀽
   // Poll receiver/stream config so the UI shows the live broadcaster IP.
   if(_ddsStatusPoll)clearInterval(_ddsStatusPoll);
   _ddsStatusPoll=setInterval(()=>{if(_ddsActive)ddsRefreshReceiverConfig();},1000);
@@ -437,7 +439,7 @@ function ddsStop(){
 // end DDS live
 function setStatus(m,c){
   const e=document.getElementById('status');e.textContent=m;e.className=c||'';
-  // 同时把状态消息打到 log 面板（去掉空消息和"loading"占位避免刷屏）
+  // 鍚屾椂鎶婄姸鎬佹秷鎭墦鍒?log 闈㈡澘锛堝幓鎺夌┖娑堟伅鍜?loading"鍗犱綅閬垮厤鍒峰睆锛?
   if(m && m!==setStatus._last){
     setStatus._last=m;
     const lv=(c==='err')?'err':(c==='ok'?'ok':(c==='loading'||c==='warn'?'warn':'ui'));
@@ -448,7 +450,7 @@ function onFileSelect(path){if(_ddsActive)return;_stopPlay();if(path)loadFile(pa
 async function refreshList(){const r=await fetch('/api/files');const d=await r.json();const sel=document.getElementById('file-select');sel.innerHTML='<option value="">&#8212; select file &#8212;</option>';d.files.forEach(f=>{const o=document.createElement('option');o.value=f;o.textContent=f;sel.appendChild(o);});_playFiles=d.files||[];_playTotal=_playFiles.length;const ts=document.getElementById('play-total');if(ts)ts.textContent=_playTotal;const sk=document.getElementById('play-seek');if(sk){sk.max=Math.max(0,_playTotal-1);sk.value=_playCur;}}
 function _applyZRange(floats,nfields,fields){const zi=fields.indexOf('z');if(zi<0)return;const np=(floats.length/nfields)|0;let mn=Infinity,mx=-Infinity;for(let i=0;i<np;i++){const z=floats[i*nfields+zi];if(z<mn)mn=z;if(z>mx)mx=z;}const step=Math.max(0.01,parseFloat(((mx-mn)/200).toFixed(2)));['flt-zmin','flt-zmax'].forEach((id,ii)=>{const el=document.getElementById(id);if(el){el.min=mn.toFixed(2);el.max=mx.toFixed(2);el.step=step;el.value=ii===0?mn.toFixed(2):mx.toFixed(2);}});}
 async function loadFile(path){
-  if(!path)return;setStatus('loading…','loading');document.getElementById('overlay').style.display='none';
+  if(!path)return;setStatus('loading...','loading');document.getElementById('overlay').style.display='none';
   try{
     const _t0=performance.now();
     const _fromCache=_frameCache.has(path)||_fetchPromises.has(path);
@@ -499,7 +501,7 @@ function clearSelection(){window._three.clearSelection();}
 async function savePcd(){
   const pts=window._three.getEditedPoints(),flds=window._three.getFields();if(!pts||!pts.length){alert('No points to save.');return;}
   const name=prompt('Save as (no extension):','edited_'+new Date().toISOString().slice(0,10));if(!name)return;
-  setStatus('saving…','loading');
+  setStatus('saving...','loading');
   try{const r=await fetch('/api/save_pcd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:pts,fields:flds,filename:name})});const d=await r.json();if(d.ok){setStatus('Saved: '+d.file,'ok');refreshList();}else setStatus('Save error: '+d.error,'err');}catch(e){setStatus('save error','err');console.error(e);}
 }
 function trajUndo(){window._three.undoWaypoint();}function trajClear(){window._three.clearWaypoints();}
@@ -530,7 +532,7 @@ let _fm='keep';function setFilterMode(m){_fm=m;document.getElementById('flt-keep
 function applyHeightFilter(){if(!window._three||!window._three.hasCloud())return;const zMin=parseFloat(document.getElementById('flt-zmin').value),zMax=parseFloat(document.getElementById('flt-zmax').value);if(isNaN(zMin)||isNaN(zMax)||zMin>=zMax)return;window._three.applyFilter(zMin,zMax,_fm);setStatus('Filter: '+_fm+' ['+zMin.toFixed(2)+', '+zMax.toFixed(2)+']','ok');}
 function resetHeightFilter(){window._three.resetFilter();setStatus('Filter reset','ok');}
 function setView(p){window._three.setView(p);['3d','top','front','left'].forEach(v=>{const b=document.getElementById('view-'+v);if(b)b.classList.toggle('active',v===p);});const fb=document.getElementById('view-free');if(fb)fb.classList.toggle('active',p==='free');}
-// keyboard shortcuts: p/P → 3D, t/T → Top
+// keyboard shortcuts: p/P 鈫?3D, t/T 鈫?Top
 document.addEventListener('keydown',e=>{
   if(e.ctrlKey||e.altKey||e.metaKey)return;
   const t=e.target,tn=t&&t.tagName;
@@ -540,7 +542,7 @@ document.addEventListener('keydown',e=>{
   else if(k==='t'){e.preventDefault();setView('top');}
   else if(k==='f'){e.preventDefault();setView(window._three && window._three.isFreeMode && window._three.isFreeMode()?'3d':'free');}
 });
-// ── Directory browser ──────────────────────────────────────────────────────
+// 鈹€鈹€ Directory browser 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 let _browseDir='';
 async function browseDir(dir){
   try{
@@ -595,13 +597,13 @@ async function pickDirNative(){
     _frameCache.clear(); _fetchPromises.clear();
     setStatus('listing '+_browseDir+'\u2026','loading');
     const cwdEl=document.getElementById('dir-modal-cwd'); if(cwdEl) cwdEl.textContent=_browseDir;
-    // 直接走 /api/files 拿文件列表（与下拉框同源），省掉一次 /api/browse 往返
+    // 鐩存帴璧?/api/files 鎷挎枃浠跺垪琛紙涓庝笅鎷夋鍚屾簮锛夛紝鐪佹帀涓€娆?/api/browse 寰€杩?
     await refreshList();
     if(_playFiles && _playFiles.length){
       const sel=document.getElementById('file-select');
       if(sel&&sel.options.length>1){sel.selectedIndex=1;}
       setStatus('switched to '+_browseDir+' ('+_playFiles.length+' pcd)','ok');
-      // 第一个文件用相对路径加载（与下拉框 onFileSelect 一致）
+      // 绗竴涓枃浠剁敤鐩稿璺緞鍔犺浇锛堜笌涓嬫媺妗?onFileSelect 涓€鑷达級
       loadFile(_playFiles[0]);
     }else{
       setStatus('switched dir, no .pcd here','warn');
@@ -636,8 +638,8 @@ async function loadFileAbs(absPath){
     document.getElementById('info').textContent=npoints.toLocaleString()+' pts'+(original_count!==npoints?' (\u2193'+original_count.toLocaleString()+')':'')+'  \u00b7  '+(fname||absPath.split(/[\\/]/).pop());setStatus('OK','ok');
   }catch(e){setStatus('fetch error','err');console.error(e);}
 }
-refreshList();refreshTrajList();ddsRefreshReceiverConfig();
-// ── Camera mode (GVSP UDP receiver) ─────────────────────────────────────────
+refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();
+// 鈹€鈹€ Camera mode (GVSP UDP receiver) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 const _CAM_PCD_SECTIONS=['sec-file','sec-view','sec-play','sec-dds','sec-traj','sec-edit'];
 let _camMode=false,_camActive=false,_camLastId=-1;
 let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0;
@@ -673,7 +675,7 @@ function _camUpdateStatus(fid,w,h){
   _camFpsFrames++;
   const elapsed=now-_camFpsTs;
   if(elapsed>=500){_camFps=_camFpsFrames*1000/elapsed;_camFpsFrames=0;_camFpsTs=now;}
-  const label='frame #'+fid+'  '+w+'×'+h;
+  const label='frame #'+fid+'  '+w+'脳'+h;
   const noSig=document.getElementById('cam-no-signal');if(noSig)noSig.style.display='none';
   const stEl=document.getElementById('cam-status');if(stEl){stEl.textContent=label;stEl.style.color='#34d399';}
   document.getElementById('cam-bind-status').textContent=label;
@@ -748,15 +750,22 @@ async function _camDrainFrames(){
 }
 function switchMode(mode){
   const toCam=mode==='cam';
-  if(_camMode===toCam)return;
+  const toGs=mode==='gs';
+  const toPcd=!toCam&&!toGs;
+  if(_camMode===(mode==='cam')&&!toGs){if(!toPcd)return;}
   _camMode=toCam;
-  document.getElementById('tab-pcd').classList.toggle('active',!toCam);
+  document.getElementById('tab-pcd').classList.toggle('active',toPcd);
   document.getElementById('tab-cam').classList.toggle('active',toCam);
-  _CAM_PCD_SECTIONS.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=toCam?'none':'';});
+  const tabGs=document.getElementById('tab-gs');if(tabGs)tabGs.classList.toggle('active',toGs);
+  _CAM_PCD_SECTIONS.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toGs)?'none':'';});
   const secCam=document.getElementById('sec-camera');if(secCam)secCam.style.display=toCam?'':'none';
+  const secGs=document.getElementById('sec-gs');if(secGs)secGs.style.display=toGs?'':'none';
   const camWrap=document.getElementById('camera-wrap');if(camWrap)camWrap.classList.toggle('active',toCam);
-  ['cv','lasso-canvas','axes-label'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=toCam?'none':'';});
-  const ovl=document.getElementById('overlay');if(ovl)ovl.style.display=toCam?'none':'';
+  ['cv','lasso-canvas'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=toCam?'none':'';});
+  const axesLabel=document.getElementById('axes-label');if(axesLabel)axesLabel.style.display=toCam?'none':'';
+  const ovl=document.getElementById('overlay');if(ovl)ovl.style.display=(toCam||toGs)?'none':'';
+  const ovlText=ovl?.querySelector('span:last-child');if(ovlText)ovlText.textContent=toGs?'':'Select a PCD file';
+  const gsOvl=document.getElementById('gs-overlay');if(gsOvl)gsOvl.style.display=toGs?'flex':'none';
   if(!toCam){
     _camActive=false;
     if(_camAbortCtrl){_camAbortCtrl.abort();_camAbortCtrl=null;}
@@ -768,6 +777,15 @@ function switchMode(mode){
   }else{
     if(_ddsActive)ddsStop();
   }
+  if(toGs){
+    window._three?.clearCloud?.();
+    window._three?.setSceneAxesVisible?.(true);
+    const info=document.getElementById('info');if(info)info.textContent='';
+    const status=document.getElementById('status');if(status)status.textContent='3DGS mode';
+  }else{
+    window._three?.setSceneAxesVisible?.(true);
+  }
+  if(!toGs&&window._gaussian){window._gaussian.dispose();}
 }
 async function camConnect(){
   if(_camActive){
@@ -820,25 +838,85 @@ async function _camPollLoop(){
 }
 // end Camera mode
 
-// ── Drag & drop .pcd files / folders onto the 3D canvas ─────────────────────────────
+// 鈹€鈹€ Gaussian Splatting UI 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+async function refreshGsList(){
+  try{
+    const r=await fetch('/api/gaussian_files');
+    const d=await r.json();
+    const sel=document.getElementById('gs-file-select');
+    if(!sel)return;
+    sel.innerHTML='<option value="">&#8212; select .ply file &#8212;</option>';
+    (d.files||[]).forEach(f=>{const o=document.createElement('option');o.value=f;o.textContent=f;sel.appendChild(o);});
+    _logUI('gs','listed '+d.files.length+' ply files','ok');
+  }catch(e){setStatus('GS list error: '+e.message,'err');}
+}
+async function onGsFileSelect(path){
+  if(!path)return;
+  const _gsOvl=document.getElementById('gs-overlay');if(_gsOvl)_gsOvl.style.display='none';
+  setStatus('Loading '+path+'\u2026','');
+  const infoEl=document.getElementById('gs-info');
+  const loadEl=document.getElementById('gs-load-ms');
+  const loadingEl=document.getElementById('gs-loading');
+  const t0=performance.now();
+  if(infoEl)infoEl.textContent='loading\u2026';
+  if(loadingEl)loadingEl.style.display='block';
+  try{
+    const shDegree=Math.max(0,Math.min(3,parseInt(document.getElementById('gs-sh-level')?.value||'0',10)||0));
+    const res=await window._gaussian.load('/api/ply?file='+encodeURIComponent(path), path, {shDegree});
+    const n=window._gaussian.getSplatCount();
+    if(infoEl)infoEl.textContent=n.toLocaleString()+' splats | '+window._gaussian.getFps()+' fps';
+    if(loadEl)loadEl.textContent='load: '+Math.round((res?.totalMs??(performance.now()-t0)))+' ms';
+    setStatus('Loaded '+n.toLocaleString()+' Gaussians','ok');
+    _logUI('gs','loaded '+path+' ('+n+' splats)','ok');
+  }catch(e){
+    if(infoEl)infoEl.textContent='error';
+    setStatus('GS load error: '+e.message,'err');
+    _logUI('gs','load error: '+e.message,'err');
+  }finally{
+    if(loadingEl)loadingEl.style.display='none';
+  }
+}
+function setGsShLevel(v){
+  const lv=Math.max(0,Math.min(3,parseInt(v,10)||0));
+  window._gaussian?.setShDegree?.(lv);
+}
+
+function _refreshGsInfo(){
+  const tabGs=document.getElementById('tab-gs');
+  if(!tabGs||!tabGs.classList.contains('active'))return;
+  const infoEl=document.getElementById('gs-info');
+  const loadingEl=document.getElementById('gs-loading');
+  if(!infoEl||!window._gaussian)return;
+  const n=window._gaussian.getSplatCount?.()||0;
+  const fps=window._gaussian.getFps?.()||0;
+  infoEl.textContent=n.toLocaleString()+' splats | '+fps+' fps';
+  if(loadingEl&&loadingEl.style.display!=='none'){
+    const t=((Date.now()/300)|0)%4;
+    loadingEl.textContent='loading'+'.'.repeat(t);
+  }
+}
+setInterval(_refreshGsInfo,300);
+
+// ── Drag & drop .pcd/.ply files or folders onto the canvas ─────────────────────────────
 (function(){
   const wrap=document.getElementById('canvas-wrap');
   const ov=document.createElement('div');
   ov.id='drop-ov';
   ov.style.cssText='position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(14,116,144,.18);border:3px dashed #22d3ee;color:#cffafe;font-size:1.1rem;font-weight:600;pointer-events:none;z-index:30;text-align:center;padding:20px;text-shadow:0 1px 4px #000';
-  ov.innerHTML='\u2935\ufe0f  Drop .pcd file(s) or folder to load';
+  ov.innerHTML='\u2935\ufe0f  Drop .pcd / .ply file(s) or folder to load';
   wrap.appendChild(ov);
   let _depth=0;
   function show(on){ov.style.display=on?'flex':'none';}
+  function _isSupported(name){const n=(name||'').toLowerCase();return n.endsWith('.pcd')||n.endsWith('.ply');}
   wrap.addEventListener('dragenter',e=>{e.preventDefault();_depth++;show(true);});
   wrap.addEventListener('dragover', e=>{e.preventDefault();e.dataTransfer.dropEffect='copy';});
   wrap.addEventListener('dragleave',e=>{e.preventDefault();_depth=Math.max(0,_depth-1);if(_depth===0)show(false);});
 
-  // recursively traverse a webkit FileSystem entry, collecting {file, relpath} for every .pcd
+  // recursively traverse a webkit FileSystem entry, collecting {file, relpath} for supported files
   function _readEntries(reader){return new Promise((res,rej)=>reader.readEntries(res,rej));}
   async function _walkEntry(entry, prefix, out){
     if(entry.isFile){
-      if(!entry.name.toLowerCase().endsWith('.pcd'))return;
+      if(!_isSupported(entry.name))return;
       const file=await new Promise((res,rej)=>entry.file(res,rej));
       out.push({file, relpath: prefix?prefix+'/'+entry.name:entry.name});
       return;
@@ -866,38 +944,58 @@ async function _camPollLoop(){
     if(!collected.length){
       // fallback: plain files only
       for(const f of (e.dataTransfer.files||[])){
-        if(f.name.toLowerCase().endsWith('.pcd')) collected.push({file:f, relpath:f.name});
+        if(_isSupported(f.name)) collected.push({file:f, relpath:f.name});
       }
     }
-    if(!collected.length){setStatus('drop ignored: no .pcd files','warn');return;}
+    if(!collected.length){setStatus('drop ignored: no .pcd/.ply files','warn');return;}
     setStatus('uploading '+collected.length+' file'+(collected.length>1?'s':'')+'\u2026','loading');
     _stopPlay();
-    let firstRel='', okN=0;
+    let firstPcd='', firstPly='', okN=0;
     for(const {file, relpath} of collected){
+      const lower=file.name.toLowerCase();
+      const isPly=lower.endsWith('.ply');
+      const api=isPly?'/api/upload_ply':'/api/upload_pcd';
       try{
-        const r=await fetch('/api/upload_pcd',{method:'POST',
+        const r=await fetch(api,{method:'POST',
           headers:{
             'X-Filename':encodeURIComponent(file.name),
             'X-Relpath' :encodeURIComponent(relpath),
             'Content-Type':'application/octet-stream'},
           body:file});
         const d=await r.json();
-        if(d.ok){okN++; if(!firstRel)firstRel=d.file;}
+        if(d.ok){
+          okN++;
+          if(isPly){if(!firstPly)firstPly=d.file;}
+          else{if(!firstPcd)firstPcd=d.file;}
+        }
         else setStatus('upload error: '+(d.error||'?'),'err');
       }catch(err){console.error(err);setStatus('upload failed','err');}
     }
-    if(!firstRel)return;
+    if(!firstPcd&&!firstPly)return;
     _frameCache.clear(); _fetchPromises.clear();
     await refreshList();
+    await refreshGsList();
+
+    if(firstPly){
+      switchMode('gs');
+      const selGs=document.getElementById('gs-file-select');
+      if(selGs){
+        for(let i=0;i<selGs.options.length;i++){if(selGs.options[i].value===firstPly){selGs.selectedIndex=i;break;}}
+      }
+      setStatus('uploaded '+okN+' \u2192 '+firstPly,'ok');
+      onGsFileSelect(firstPly);
+      return;
+    }
+
     const sel=document.getElementById('file-select');
     if(sel){
-      for(let i=0;i<sel.options.length;i++){if(sel.options[i].value===firstRel){sel.selectedIndex=i;break;}}
+      for(let i=0;i<sel.options.length;i++){if(sel.options[i].value===firstPcd){sel.selectedIndex=i;break;}}
     }
-    setStatus('uploaded '+okN+' \u2192 '+firstRel,'ok');
-    loadFile(firstRel);
+    setStatus('uploaded '+okN+' \u2192 '+firstPcd,'ok');
+    loadFile(firstPcd);
   });
 })();
-// ── Sidebar resize & collapse ────────────────────────────────────────────────
+// 鈹€鈹€ Sidebar resize & collapse 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 const _sidebar=document.getElementById('sidebar');
 const _handle=document.getElementById('resize-handle');
 const _toggle=document.getElementById('sidebar-toggle');
@@ -929,3 +1027,4 @@ document.addEventListener('keydown',e=>{
   if(e.key==='b'||e.key==='B')toggleSidebar();
   if(e.key==='l'||e.key==='L')toggleLogPanel();
 });
+

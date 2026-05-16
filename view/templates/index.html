@@ -13,6 +13,7 @@
   <div id="mode-tabs">
     <button class="mode-tab active" id="tab-pcd" onclick="switchMode('pcd')">&#9729; PCD Viewer</button>
     <button class="mode-tab" id="tab-cam" onclick="switchMode('cam')">&#128247; Camera</button>
+    <button class="mode-tab" id="tab-gs"  onclick="switchMode('gs')">&#127875; 3DGS</button>
   </div>
   <div id="sidebar-scroll">
   <details id="sec-file" open>
@@ -227,6 +228,29 @@
       </div>
     </div>
   </details>
+  <details id="sec-gs" open style="display:none">
+    <summary>&#127875; Gaussian Splatting</summary>
+    <div class="sec">
+      <div class="row">
+        <select class="full" id="gs-file-select" onchange="onGsFileSelect(this.value)">
+          <option value="">&#8212; select .ply file &#8212;</option>
+        </select>
+      </div>
+      <button class="btn ghost full-w" onclick="refreshGsList()">&#8634; Refresh List</button>
+      <div class="row" style="margin-top:6px">
+        <span class="lbl">SH</span>
+        <select id="gs-sh-level" style="flex:1" onchange="setGsShLevel(this.value)">
+          <option value="0">L0 (DC)</option>
+          <option value="1">L1</option>
+          <option value="2">L2</option>
+          <option value="3">L3</option>
+        </select>
+      </div>
+      <div id="gs-loading" style="display:none;font-size:.65rem;color:#38bdf8;text-align:center;margin-top:4px">loading</div>
+      <div id="gs-load-ms" style="font-size:.62rem;color:#64748b;text-align:center">load: -- ms</div>
+      <div id="gs-info" style="font-size:.65rem;color:#64748b;margin-top:4px;text-align:center">idle</div>
+    </div>
+  </details>
   <details id="sec-camera" open style="display:none">
     <summary>&#128247; Camera Receiver</summary>
     <div class="sec">
@@ -268,6 +292,10 @@
   <div id="overlay" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;pointer-events:none">
     <span style="font-size:2.5rem">&#9729;</span>
     <span style="font-size:1rem;color:#374151">Select a PCD file</span>
+  </div>
+  <div id="gs-overlay" style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;flex-direction:column;gap:14px;pointer-events:none;background:transparent;opacity:0.35">
+    <span style="font-size:1.05rem;color:#cbd5e1;font-weight:500">Drop a .ply file here to load</span>
+    <span style="font-size:.75rem;color:#94a3b8">or select a file from the left panel</span>
   </div>
   <canvas id="cv"></canvas>
   <canvas id="lasso-canvas"></canvas>
