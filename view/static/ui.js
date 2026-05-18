@@ -881,6 +881,32 @@ function setGsShLevel(v){
   window._gaussian?.setShDegree?.(lv);
 }
 
+// ── GS Color Adjustment ──
+function setGsColor(key, rawVal) {
+  const valEl = document.getElementById('gs-' + (key === 'hueShift' ? 'hue' : key) + '-val');
+  let glVal;
+  switch (key) {
+    case 'brightness':   glVal = parseFloat(rawVal) / 100;   if(valEl) valEl.textContent = rawVal; break;
+    case 'contrast':     glVal = parseFloat(rawVal) / 100;   if(valEl) valEl.textContent = rawVal; break;
+    case 'saturation':   glVal = parseFloat(rawVal) / 100;   if(valEl) valEl.textContent = rawVal; break;
+    case 'temperature':  glVal = parseFloat(rawVal) / 100;   if(valEl) valEl.textContent = rawVal; break;
+    case 'hueShift':     glVal = parseFloat(rawVal) * Math.PI / 180; if(valEl) valEl.textContent = rawVal + '°'; break;
+    default: return;
+  }
+  window._gaussian?.setColorAdjust?.(key, glVal);
+}
+
+function resetGsColor() {
+  window._gaussian?.resetColorAdjust?.();
+  const defs = { brightness: 0, contrast: 100, saturation: 100, temperature: 0, hue: 0 };
+  for (const [k, v] of Object.entries(defs)) {
+    const el = document.getElementById('gs-' + k);
+    const valEl = document.getElementById('gs-' + k + '-val');
+    if (el) el.value = v;
+    if (valEl) valEl.textContent = k === 'hue' ? v + '°' : String(v);
+  }
+}
+
 function _refreshGsInfo(){
   const tabGs=document.getElementById('tab-gs');
   if(!tabGs||!tabGs.classList.contains('active'))return;

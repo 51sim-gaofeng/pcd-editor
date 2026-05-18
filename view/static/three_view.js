@@ -332,6 +332,8 @@ window._gaussian = {
   setSplatScale(s){ _gaussianView?.setSplatScale(s); },
   setShDegree(d)  { _gaussianView?.setShDegree(d); },
   onResize(w, h)  { _gaussianView?.onResize(w, h); },
+  setColorAdjust(key, val) { _gaussianView?.setColorAdjust(key, val); },
+  resetColorAdjust() { _gaussianView?.resetColorAdjust(); },
 };
 
 let pointCloud=null,rawPoints=[],rawFields=[],ptSize=1.5,colorMode='height';

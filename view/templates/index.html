@@ -246,6 +246,28 @@
           <option value="3">L3</option>
         </select>
       </div>
+      <!-- Color adjustments -->
+      <details style="margin-top:6px">
+        <summary style="font-size:.72rem;cursor:pointer;color:#94a3b8">&#127912; Color Adjust</summary>
+        <div style="display:grid;grid-template-columns:56px 1fr 32px;gap:3px 6px;align-items:center;margin-top:4px;font-size:.68rem;color:#94a3b8">
+          <span>Brightness</span>
+          <input type="range" id="gs-brightness" min="-100" max="100" value="0" oninput="setGsColor('brightness',this.value)">
+          <span id="gs-brightness-val" style="text-align:right">0</span>
+          <span>Contrast</span>
+          <input type="range" id="gs-contrast" min="0" max="200" value="100" oninput="setGsColor('contrast',this.value)">
+          <span id="gs-contrast-val" style="text-align:right">100</span>
+          <span>Saturation</span>
+          <input type="range" id="gs-saturation" min="0" max="200" value="100" oninput="setGsColor('saturation',this.value)">
+          <span id="gs-saturation-val" style="text-align:right">100</span>
+          <span>Temperature</span>
+          <input type="range" id="gs-temperature" min="-100" max="100" value="0" oninput="setGsColor('temperature',this.value)">
+          <span id="gs-temperature-val" style="text-align:right">0</span>
+          <span>Hue</span>
+          <input type="range" id="gs-hue" min="0" max="360" value="0" oninput="setGsColor('hueShift',this.value)">
+          <span id="gs-hue-val" style="text-align:right">0°</span>
+        </div>
+        <button class="btn ghost full-w" style="margin-top:4px;font-size:.65rem" onclick="resetGsColor()">&#8634; Reset Colors</button>
+      </details>
       <div id="gs-loading" style="display:none;font-size:.65rem;color:#38bdf8;text-align:center;margin-top:4px">loading</div>
       <div id="gs-load-ms" style="font-size:.62rem;color:#64748b;text-align:center">load: -- ms</div>
       <div id="gs-info" style="font-size:.65rem;color:#64748b;margin-top:4px;text-align:center">idle</div>
