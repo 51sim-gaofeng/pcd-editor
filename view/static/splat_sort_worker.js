@@ -1,14 +1,15 @@
 /**
- * splat_sort_worker.js — Web Worker: sort Gaussian splats back-to-front.
+ * splat_sort_worker.js — Web Worker: cull + sort Gaussian splats back-to-front.
  *
- * Uses 4-pass 8-bit radix sort (32-bit key) for O(N) performance.
+ * Performs visibility culling AND 4-pass 8-bit radix sort entirely off main thread.
  * Sort key: negated view-space depth → ascending sort = back-to-front.
  *
  * Message in:
- *   { type:'sort', centers:ArrayBuffer (Float32, N×3),
- *     indices?:ArrayBuffer(Uint32, N), count:N, camPos:[x,y,z], camFwd:[fx,fy,fz] }
+ *   { type:'sort', centers:ArrayBuffer(Float32, N×3), radii:ArrayBuffer|null,
+ *     totalCount:N, camPos:[x,y,z], camFwd:[fx,fy,fz],
+ *     focal:number, maxVisible:number, minPx:number, farCull:number }
  * Message out:
- *   { type:'sorted', indices:ArrayBuffer (Float32, N), sortTime:ms }
+ *   { type:'sorted', indices:ArrayBuffer(Float32, M), sortTime:ms, cullTime:ms, visibleCount:number }
  */
 
 'use strict';
@@ -49,9 +50,6 @@ function radixSort(keys, indices, N) {
 }
 
 /* ---------- float32 → sortable uint32 (preserves numeric order) ---------- */
-// Positive floats: flip sign bit (0x80000000)
-// Negative floats: flip all bits
-// Result: larger uint32 ⟺ larger float
 
 const _ab  = new ArrayBuffer(4);
 const _f32 = new Float32Array(_ab);
@@ -69,41 +67,100 @@ self.onmessage = function (e) {
     const msg = e.data;
     if (msg.type !== 'sort') return;
 
-    const t0 = performance.now();
-
-    const { count: N, camPos, camFwd } = msg;
-    const pos = new Float32Array(msg.centers);     // transferred buffer
-    const srcIndices = msg.indices ? new Uint32Array(msg.indices) : null;
-
-    // Build sort keys (negate depth so ascending sort = back-to-front)
-    const keys    = new Uint32Array(N);
-    const indices = new Uint32Array(N);
+    const { totalCount: N, camPos, camFwd, focal, maxVisible, minPx, farCull } = msg;
+    const centers = new Float32Array(msg.centers);
+    const radii = msg.radii ? new Float32Array(msg.radii) : null;
 
     const cpx = camPos[0], cpy = camPos[1], cpz = camPos[2];
     const cfx = camFwd[0], cfy = camFwd[1], cfz = camFwd[2];
 
+    /* ── Phase 1: Visibility culling (moved from main thread) ── */
+    const tCull0 = performance.now();
+
+    // Pre-allocate to avoid dynamic push() GC pressure
+    const visibleBuf = new Uint32Array(Math.min(N, maxVisible + 1024));
+    let visCount = 0;
+
     for (let i = 0; i < N; i++) {
-        const src = srcIndices ? srcIndices[i] : i;
-        const dx = pos[src*3]   - cpx;
-        const dy = pos[src*3+1] - cpy;
-        const dz = pos[src*3+2] - cpz;
+        const bx = centers[i*3]   - cpx;
+        const by = centers[i*3+1] - cpy;
+        const bz = centers[i*3+2] - cpz;
+        const depth = bx*cfx + by*cfy + bz*cfz;
+        // Use radius margin: a splat whose center is slightly behind the camera
+        // but whose physical extent crosses the view plane should still be included.
+        const radius = radii ? radii[i] : 1.0;
+        if (depth + radius <= 0.0 || depth > farCull) continue;
+        const pxRadius = focal * radius / Math.max(depth, 0.1);
+        if (pxRadius < minPx) continue;
+        if (visCount < visibleBuf.length) {
+            visibleBuf[visCount] = i;
+        }
+        visCount++;
+    }
+
+    const cullTime = performance.now() - tCull0;
+
+    /* ── Phase 1b: Apply maxVisible cap ── */
+    let activeIndices;
+    let activeCount;
+
+    if (visCount === 0) {
+        // Safety fallback: never blank the scene
+        if (N > maxVisible) {
+            activeIndices = new Uint32Array(maxVisible);
+            const step = N / maxVisible;
+            for (let i = 0; i < maxVisible; i++) activeIndices[i] = Math.floor(i * step);
+            activeCount = maxVisible;
+        } else {
+            activeIndices = new Uint32Array(N);
+            for (let i = 0; i < N; i++) activeIndices[i] = i;
+            activeCount = N;
+        }
+    } else if (visCount > maxVisible) {
+        const actualVis = Math.min(visCount, visibleBuf.length);
+        const step = Math.ceil(actualVis / maxVisible);
+        activeIndices = new Uint32Array(Math.ceil(actualVis / step));
+        let j = 0;
+        for (let i = 0; i < actualVis; i += step) {
+            activeIndices[j++] = visibleBuf[i];
+        }
+        activeCount = j;
+    } else {
+        activeCount = Math.min(visCount, visibleBuf.length);
+        activeIndices = visibleBuf.subarray(0, activeCount);
+    }
+
+    /* ── Phase 2: Radix sort back-to-front ── */
+    const t0 = performance.now();
+
+    const M = activeCount;
+    const keys    = new Uint32Array(M);
+    const indices = new Uint32Array(M);
+
+    for (let i = 0; i < M; i++) {
+        const src = activeIndices[i];
+        const dx = centers[src*3]   - cpx;
+        const dy = centers[src*3+1] - cpy;
+        const dz = centers[src*3+2] - cpz;
         const depth = dx*cfx + dy*cfy + dz*cfz;
-        // Negate: farthest (largest depth) → most negative negated → smallest key → sorted first
         keys[i]    = floatToSortKey(-depth);
         indices[i] = src;
     }
 
-    // 4-pass radix sort (ascending key = back-to-front)
-    radixSort(keys, indices, N);
+    radixSort(keys, indices, M);
 
-    // Return as Float32Array for use as index texture values
-    // (Float32 can represent integers exactly up to 2^24 = 16M splats)
-    const result = new Float32Array(N);
-    for (let i = 0; i < N; i++) result[i] = indices[i];
+    // Return as Float32Array (integers exact up to 2^24 = 16M splats)
+    const result = new Float32Array(M);
+    for (let i = 0; i < M; i++) result[i] = indices[i];
 
     const sortTime = performance.now() - t0;
+    // Return the transferred centers/radii buffers back to the main thread
+    const transferList = [result.buffer];
+    if (msg.centers) transferList.push(msg.centers);
+    if (msg.radii)   transferList.push(msg.radii);
     self.postMessage(
-        { type: 'sorted', indices: result.buffer, sortTime },
-        [result.buffer]
+        { type: 'sorted', indices: result.buffer, sortTime, cullTime, visibleCount: visCount,
+          centers: msg.centers || null, radii: msg.radii || null },
+        transferList
     );
 };

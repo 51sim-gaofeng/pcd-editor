@@ -43,8 +43,7 @@ export class GaussianView {
         this._lastSortAt     = 0;
         this._lastSortCamPos = new THREE.Vector3(Infinity, Infinity, Infinity);
         this._lastSortCamDir  = new THREE.Vector3(0, 0, -1);
-        this._forceSortOnce  = false;
-
+        this._forceSortOnce  = false;        this._tmpCamDir      = new THREE.Vector3();   // reused per-frame, no GC
         // FPS counter
         this._fpsCnt = 0;
         this._fpsT0  = 0;
@@ -93,9 +92,18 @@ export class GaussianView {
     tick(now) {
         if (!this._splat) return;
         const camPos = this.camera.position;
-        const camDir = new THREE.Vector3();
+        const camDir = this._tmpCamDir;
         this.camera.getWorldDirection(camDir);
         const moved = camPos.distanceTo(this._lastSortCamPos) > 0.04 || camDir.dot(this._lastSortCamDir) < 0.9997;
+
+        // Detect sort completion: when a pending sort just finished,
+        // reset the timer so the next tick can immediately re-sort if camera moved.
+        const sortPendingNow = this._splat._sortPending;
+        if (this._sortWasPending && !sortPendingNow && moved) {
+            this._lastSortAt = 0;  // allow immediate re-sort
+        }
+        this._sortWasPending = sortPendingNow;
+
         const shouldSort = this._forceSortOnce || (moved && now - this._lastSortAt > this._sortInterval);
         if (shouldSort) {
             const wasPending = this._splat._sortPending;
@@ -106,9 +114,9 @@ export class GaussianView {
                 this._lastSortCamPos.copy(camPos);
                 this._lastSortCamDir.copy(camDir);
                 this._forceSortOnce = false;
-                // Adapt sort interval to measured sort cost
+                // Adapt sort interval: 1.5x last sort time (was 3.0x), min 100ms
                 if (this._splat._lastSortMs > 0) {
-                    this._sortInterval = Math.max(250, this._splat._lastSortMs * 3.0);
+                    this._sortInterval = Math.max(100, this._splat._lastSortMs * 1.5);
                 }
             }
         }
@@ -139,6 +147,10 @@ export class GaussianView {
         this._shDegree = Math.max(0, Math.min(3, level|0));
         this._splat?.setShDegree(this._shDegree);
     }
+
+    setColorAdjust(key, val) { this._splat?.setColorAdjust(key, val); }
+    resetColorAdjust() { this._splat?.resetColorAdjust(); }
+    getColorDefaults() { return this._splat?.getColorDefaults() || { brightness: 0, contrast: 1, saturation: 1, temperature: 0, hueShift: 0 }; }
 
     dispose() { this._dispose(); }
 

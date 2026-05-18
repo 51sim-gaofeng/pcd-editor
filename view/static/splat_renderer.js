@@ -182,20 +182,52 @@ void main() {
 const FRAGMENT_SHADER = /* glsl */`
 precision highp float;
 
+uniform float u_brightness;   // [-1, 1]
+uniform float u_contrast;     // [0, 2], default 1
+uniform float u_saturation;   // [0, 2], default 1
+uniform float u_temperature;  // [-1, 1], negative=cool/blue, positive=warm/yellow
+uniform float u_hueShift;     // [0, 2π]
+
 in vec4 vColor;
 in vec2 vPos2;
 
 out vec4 fragColor;
 
 void main() {
-    /* Gaussian in eigen-space: exp(-|uv|²)  — position.xy is already normalised
-       so discard when the Gaussian is essentially zero (< e^-4 ≈ 0.018) */
     float A = -dot(vPos2, vPos2);
     if (A < -4.0) discard;
 
-    /* premultiplied alpha output  (blending: ONE, ONE_MINUS_SRC_ALPHA) */
+    vec3 rgb = vColor.rgb;
+
+    /* ── brightness ── */
+    rgb += u_brightness;
+
+    /* ── contrast (pivot at mid-gray 0.5) ── */
+    rgb = (rgb - 0.5) * u_contrast + 0.5;
+
+    /* ── color temperature (red/blue channel shift) ── */
+    rgb.r += u_temperature * 0.15;
+    rgb.b -= u_temperature * 0.15;
+
+    /* ── saturation (luminance-preserving) ── */
+    float lum = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+    rgb = mix(vec3(lum), rgb, u_saturation);
+
+    /* ── hue rotation (YIQ color space) ── */
+    if (abs(u_hueShift) > 0.001) {
+        float cosH = cos(u_hueShift), sinH = sin(u_hueShift);
+        mat3 hueRot = mat3(
+            0.299+0.701*cosH+0.168*sinH, 0.587-0.587*cosH+0.330*sinH, 0.114-0.114*cosH-0.497*sinH,
+            0.299-0.299*cosH-0.328*sinH, 0.587+0.413*cosH+0.035*sinH, 0.114-0.114*cosH+0.292*sinH,
+            0.299-0.300*cosH+1.250*sinH, 0.587-0.588*cosH-1.050*sinH, 0.114+0.886*cosH-0.203*sinH
+        );
+        rgb = hueRot * rgb;
+    }
+
+    rgb = clamp(rgb, 0.0, 1.0);
+
     float alpha = vColor.a * exp(A);
-    fragColor   = vec4(alpha * vColor.rgb, alpha);
+    fragColor   = vec4(alpha * rgb, alpha);
 }
 `;
 
@@ -230,6 +262,11 @@ export class SplatRenderer {
         this._lastSortMs   = 0;      // measured sort time for adaptive throttle
         this._lastCamPos   = new THREE.Vector3(Infinity, Infinity, Infinity);
         this._lastCamFwd   = new THREE.Vector3(0, 0, -1);
+        this._tmpFwd       = new THREE.Vector3();   // reused in requestSort(), no GC
+        // Ping-pong sort buffers: worker owns these during sort, _centersF32/_radiusF32
+        // stay on the main thread so appendChunk() can always write to them safely.
+        this._sortCentersBuf = null;  // Float32Array reused across sort calls
+        this._sortRadiiBuf   = null;
 
         this._initSortWorker();
     }
@@ -240,8 +277,11 @@ export class SplatRenderer {
         const url = new URL('./splat_sort_worker.js', import.meta.url).href;
         this._sortWorker = new Worker(url);
         this._sortWorker.onmessage = (e) => {
-            const { type, indices, sortTime } = e.data;
+            const { type, indices, sortTime, centers, radii } = e.data;
             if (type !== 'sorted') return;
+            // Reclaim ping-pong sort buffers (main thread _centersF32/_radiusF32 are untouched)
+            if (centers) this._sortCentersBuf = new Float32Array(centers);
+            if (radii)   this._sortRadiiBuf   = new Float32Array(radii);
             this._sortPending = false;
             this._lastSortMs  = sortTime;
             // upload sorted index texture
@@ -401,6 +441,11 @@ export class SplatRenderer {
                 u_camPos:    { value: this.camera.position },
                 u_shCoeffCount: { value: this._shCoeffCount },
                 u_shDegree:  { value: this._shDegree },
+                u_brightness:  { value: 0.0 },
+                u_contrast:    { value: 1.0 },
+                u_saturation:  { value: 1.0 },
+                u_temperature: { value: 0.0 },
+                u_hueShift:    { value: 0.0 },
             },
             blending:          THREE.CustomBlending,
             blendEquation:     THREE.AddEquation,
@@ -427,18 +472,11 @@ export class SplatRenderer {
 
         const cam = this.camera;
         const cp  = cam.position;
-        const fwd = new THREE.Vector3();
+        const fwd = this._tmpFwd;
         cam.getWorldDirection(fwd);
-        const up = cam.up.clone().normalize();
-        const right = new THREE.Vector3().crossVectors(fwd, up).normalize();
         const focalX = cam.projectionMatrix.elements[0] * this._mesh.material.uniforms.u_viewport.value.x * 0.5;
         const focalY = cam.projectionMatrix.elements[5] * this._mesh.material.uniforms.u_viewport.value.y * 0.5;
         const focal = Math.max(Math.abs(focalX), Math.abs(focalY));
-
-        const visible = [];
-        const maxVisible = this._maxVisibleSplats;
-        const minPx = this._minScreenPxCull;
-        const farCull = 120000.0;
 
         // Skip if camera and view direction barely changed
         if (!this._sortNeeded) {
@@ -450,48 +488,43 @@ export class SplatRenderer {
         this._lastCamPos.copy(cp);
         this._lastCamFwd.copy(fwd);
 
+        // Ping-pong: copy current centers/radii into dedicated sort buffers,
+        // then TRANSFER those buffers (zero-copy handoff to worker).
+        // _centersF32/_radiusF32 stay intact on main thread — appendChunk() is safe.
         const N = this.numSplats;
-        const centers = this._centersF32;
-        const radii = this._radiusF32;
-        for (let i = 0; i < N; i++) {
-            const bx = centers[i*3] - cp.x;
-            const by = centers[i*3+1] - cp.y;
-            const bz = centers[i*3+2] - cp.z;
-            const depth = bx*fwd.x + by*fwd.y + bz*fwd.z;
-            if (depth <= 0.01 || depth > farCull) continue;
-            const radius = radii ? radii[i] : 1.0;
-            const pxRadius = focal * radius / depth;
-            if (pxRadius < minPx) continue;
-            visible.push(i);
+        if (!this._sortCentersBuf || this._sortCentersBuf.length < N * 3) {
+            this._sortCentersBuf = new Float32Array(N * 3);
         }
+        this._sortCentersBuf.set(this._centersF32.subarray(0, N * 3));
 
-        let activeIndices;
-        if (visible.length === 0) {
-            // Safety fallback: never let aggressive culling blank the whole scene.
-            if (N > maxVisible) {
-                const sampled = new Uint32Array(maxVisible);
-                const step = N / maxVisible;
-                for (let i = 0; i < maxVisible; i++) sampled[i] = Math.floor(i * step);
-                activeIndices = sampled;
-            } else {
-                activeIndices = new Uint32Array(N);
-                for (let i = 0; i < N; i++) activeIndices[i] = i;
+        let radiiBuffer = null;
+        if (this._radiusF32) {
+            if (!this._sortRadiiBuf || this._sortRadiiBuf.length < N) {
+                this._sortRadiiBuf = new Float32Array(N);
             }
-        } else if (visible.length > maxVisible) {
-            const step = Math.ceil(visible.length / maxVisible);
-            const sampled = [];
-            for (let i = 0; i < visible.length; i += step) sampled.push(visible[i]);
-            activeIndices = new Uint32Array(sampled);
-        } else {
-            activeIndices = new Uint32Array(visible);
+            this._sortRadiiBuf.set(this._radiusF32.subarray(0, N));
+            radiiBuffer = this._sortRadiiBuf.buffer;
+            this._sortRadiiBuf = null;   // transferred
         }
+        const centersBuffer = this._sortCentersBuf.buffer;
+        this._sortCentersBuf = null;     // transferred
 
+        const transferList = [centersBuffer];
+        if (radiiBuffer) transferList.push(radiiBuffer);
         this._sortPending = true;
         this._sortWorker.postMessage(
-            { type: 'sort', centers: centers.buffer, indices: activeIndices.buffer, count: activeIndices.length,
+            { type: 'sort',
+              centers: centersBuffer,
+              radii: radiiBuffer,
+              totalCount: N,
               camPos: [cp.x, cp.y, cp.z],
-              camFwd: [fwd.x, fwd.y, fwd.z] },
-            [activeIndices.buffer]
+              camFwd: [fwd.x, fwd.y, fwd.z],
+              focal: focal,
+              maxVisible: this._maxVisibleSplats,
+              minPx: this._minScreenPxCull,
+              farCull: 120000.0
+            },
+            transferList
         );
     }
 
@@ -517,6 +550,22 @@ export class SplatRenderer {
     setShDegree(level) {
         this._shDegree = Math.max(0, Math.min(3, level | 0));
         if (this._mesh) this._mesh.material.uniforms.u_shDegree.value = this._shDegree;
+    }
+
+    /* ── Color adjustment API ── */
+    setColorAdjust(key, value) {
+        if (!this._mesh) return;
+        const u = this._mesh.material.uniforms;
+        if (u['u_' + key]) u['u_' + key].value = value;
+    }
+
+    getColorDefaults() {
+        return { brightness: 0, contrast: 1, saturation: 1, temperature: 0, hueShift: 0 };
+    }
+
+    resetColorAdjust() {
+        const d = this.getColorDefaults();
+        for (const [k, v] of Object.entries(d)) this.setColorAdjust(k, v);
     }
 
     dispose() {
