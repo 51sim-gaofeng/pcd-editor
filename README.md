@@ -41,6 +41,39 @@ Open **http://localhost:8089** in your browser, or just launch the binary on Win
 - **Adaptive max-points budget** (Foxglove-style): dynamically downsamples when render time spikes, ramps back up when headroom returns
 - 250k points stable at 10 fps end-to-end (10–15ms transit on localhost)
 
+### Camera Receiver (GVSP/JPEG over UDP)
+- Dedicated Camera mode for live image stream rendering (separate from PCD and GS modes).
+- Long-poll frame fetch path (`/api/camera_frame`) with frame-id incremental pull.
+- Connect/Stop control for receiver lifecycle (`/api/camera_ensure`) with bind IP/port configuration.
+- Real-time status updates: frame id, resolution, and FPS badge.
+- Camera mode and DDS mode are mutually exclusive to avoid receiver conflicts.
+
+#### Camera Tab controls
+- `Bind IP`: local bind IP used by Camera receiver.
+- `Port`: UDP port for incoming camera packets.
+- `Connect / Stop`: start or stop Camera receiving loop.
+- `Show FPS badge`: toggle on-screen FPS display.
+- `cam-status`: shows current receiver state and latest frame metadata.
+- `cam-bind-status`: shows current bind/listen endpoint and running status.
+
+### Gaussian Splatting (3DGS / PLY)
+- Dedicated GS mode for `.ply` assets with drag-and-drop upload and server-side file listing
+- Shader-side model rotation using Roll / Pitch / Yaw (degrees), with covariance-consistent transform
+- Pivot-aware rotation (`p' = R(p - pivot) + pivot`) synchronized across rendering and depth sorting
+- Double-click viewport to set GS rotation pivot for faster interactive alignment
+- Spherical Harmonics color fixes: channel-grouped mapping + corrected view-direction usage to reduce purple artifacts
+
+#### 3DGS Tab controls
+- `GS File`: select a `.ply` file from the server list, then load into GS mode.
+- `SH Level`: switch SH degree (`0`-`3`) to balance quality and performance.
+- `Model Rotation (deg)`: adjust `Roll / Pitch / Yaw`; values apply immediately on change.
+- `Reset Rotation`: reset all three rotation angles back to `0`.
+- `Color Adjust`: tune `Brightness / Contrast / Saturation / Temperature / Hue` in real time.
+- `Reset Color`: restore color adjustment sliders to default values.
+- Status area (`loading / load ms / info`): shows current load state, load time, and splat/fps info.
+- In-view interaction: double-click inside viewport while GS tab is active to set the rotation pivot.
+
+
 ### Visualization aids
 - Square or **circle** ground grid (concentric rings + 30° spokes)
 - Configurable coordinate labels every N meters (default 10 m) on ±X / ±Y axes
@@ -159,10 +192,15 @@ All HTTP routing. Static files under `/static/*` are served from `view/static/`.
 | GET    | `/api/dds_stream_config`      | WS host/port + connected client count    |
 | GET    | `/api/dds_rebind?ip&port`     | Rebind UDP receiver to a new host:port   |
 | GET    | `/api/dds_set_max_points`     | Adjust DDS downsample cap                |
+| GET    | `/api/camera_frame`           | Long-poll latest camera JPEG frame       |
+| GET    | `/api/camera_status`          | Camera receiver status + telemetry       |
+| GET    | `/api/camera_ensure`          | Ensure/start camera receiver             |
+| GET    | `/api/camera_rebind`          | Rebind camera receiver IP/port           |
+| GET    | `/api/gaussian_files`         | List available `.ply` files for GS mode |
 | POST   | `/api/trajectory`             | Save trajectory JSON                     |
 | POST   | `/api/save_pcd`               | Save edited point cloud                  |
 | POST   | `/api/upload_pcd`             | Receive drag-and-drop PCD upload         |
-| POST   | `/api/upload_ply`             | Receive drag-and-drop PLY upload         |
+| POST   | `/api/upload_ply`             | Receive drag-and-drop PLY upload (GS)    |
 
 ### View
 
@@ -284,6 +322,36 @@ pip install pandas python-lzf
 - **New 3D feature**: extend `window._three` in `view/static/three_view.js`.
 - **New DDS hook**: extend `model/dds_model.py`, expose via a new `/api/dds_*` route, wire UI into `view/static/ui.js`.
 - **Config change**: update `config.py`; all modules pick it up via the shared `config` singleton.
+
+---
+
+## Version Highlights
+
+### v0.1.4.1
+- 3DGS pivot-aware rotation pipeline aligned between shader transform and depth-sort path.
+- Roll/Pitch/Yaw model rotation controls stabilized for interactive tuning.
+- Double-click viewport pivot placement improved for faster rotation-center selection.
+- SH color regression fixes reduce purple/violet artifacts on road-like surfaces.
+
+### v0.1.4
+- 3DGS onboarding and usability upgrades (GS hint layer, default panel expansion, PLY upload flow).
+- Rendering quality fixes (radii propagation, less aggressive vertex clipping, natural file sorting for GS assets).
+- GS UI simplification (removed Scale/Max controls with safer defaults).
+- Added `test_gs_smoke.py` and standardized release SOP.
+
+### v0.1.3
+- Added Camera Receiver mode (GVSP JPEG over UDP) with live status telemetry.
+- Added Edit Pick workflow improvements (double-click pick toggle, DDS pick support, adaptive pick radius).
+- Added native Save-As export for trajectories in pywebview.
+- Improved DDS view switching and pause/resume behavior; reduced disconnect traceback noise.
+
+### v0.1.2
+- Introduced DDS Live real-time point-cloud streaming (UDP ingest + WebSocket binary push).
+- Added unicast/broadcast/multicast auto-detection and sender IP echo.
+- Added DDS tri-state controls and lazy-start runtime model.
+- Performance and UX upgrades (compact protocol, adaptive point budget, grid/label improvements, packaging robustness).
+
+For full details, see `RELEASE_NOTES.md`.
 
 ---
 
