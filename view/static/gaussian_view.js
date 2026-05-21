@@ -18,6 +18,8 @@
 import * as THREE from 'three';
 import { SplatRenderer } from './splat_renderer.js';
 
+const MAX_INDEXABLE_SPLATS = 20000000;
+
 export class GaussianView {
     constructor(renderer, camera, scene, controls) {
         this.renderer  = renderer;
@@ -31,19 +33,23 @@ export class GaussianView {
 
         // Stats
         this._totalSplats  = 0;
+        this._sourceSplats = 0;
+        this._sampled      = false;
         this._loadedSplats = 0;
         this._parseMs      = 0;
         this._fetchMs      = 0;
         this._totalMs      = 0;
         this._shDegree     = 0;
-        this._maxSplats    = 20000000;
+        this._maxSplats    = MAX_INDEXABLE_SPLATS;
 
         // Sort throttle: adapt interval to last measured sort time
-        this._sortInterval   = 450;   // ms 鈥?updated dynamically
+        this._sortInterval   = 200;   // ms - updated dynamically
         this._lastSortAt     = 0;
         this._lastSortCamPos = new THREE.Vector3(Infinity, Infinity, Infinity);
         this._lastSortCamDir  = new THREE.Vector3(0, 0, -1);
-        this._forceSortOnce  = false;        this._tmpCamDir      = new THREE.Vector3();   // reused per-frame, no GC
+        this._forceSortOnce  = false;
+        this._tmpCamDir      = new THREE.Vector3();   // reused per-frame, no GC
+        this._sortWasPending = false;
         // FPS counter
         this._fpsCnt = 0;
         this._fpsT0  = 0;
@@ -64,12 +70,19 @@ export class GaussianView {
         this._filename = filename || url;
         this._dispose();
 
-        this._maxSplats = Math.max(100000, Math.min(20000000, options.maxSplats || 20000000));
+        this._maxSplats = Math.max(100000, Math.min(MAX_INDEXABLE_SPLATS, options.maxSplats || MAX_INDEXABLE_SPLATS));
         this._shDegree  = Math.max(0, Math.min(3, options.shDegree || 0));
 
         this._splat = new SplatRenderer(this.renderer, this.camera, this.scene);
         this._splat.setShDegree(this._shDegree);
+        if (options.modelRotationDeg) {
+            const r = options.modelRotationDeg;
+            this._splat.setModelRotationDeg(r.roll || 0, r.pitch || 0, r.yaw || 0);
+        }
+        this._splat.setVisible(false);   // keep hidden until parsing completes
         this._totalSplats  = 0;
+        this._sourceSplats = 0;
+        this._sampled      = false;
         this._loadedSplats = 0;
         this._parseMs      = 0;
         this._fetchMs      = 0;
@@ -81,6 +94,7 @@ export class GaussianView {
         this._lastSortCamPos.set(Infinity, Infinity, Infinity);
         this._lastSortCamDir.set(0, 0, -1);
         this._forceSortOnce = false;
+        this._sortWasPending = false;
 
         return this._fetchAndParse(url);
     }
@@ -108,7 +122,7 @@ export class GaussianView {
         if (shouldSort) {
             const wasPending = this._splat._sortPending;
             this._splat.requestSort();
-            const issuedSort = (!wasPending && this._splat._sortPending) || this._splat._lastSortMs > 0;
+            const issuedSort = (!wasPending && this._splat._sortPending);
             if (issuedSort) {
                 this._lastSortAt = now;
                 this._lastSortCamPos.copy(camPos);
@@ -135,6 +149,9 @@ export class GaussianView {
     onResize(w, h) { this._splat?.onResize(w, h); }
 
     setSplatScale(s) { this._splat?.setSplatScale(s); }
+    setVisible(v) { this._splat?.setVisible(v); }
+    setModelRotationDeg(rollDeg, pitchDeg, yawDeg) { this._splat?.setModelRotationDeg(rollDeg, pitchDeg, yawDeg); }
+    setModelRotationPivot(x, y, z) { this._splat?.setModelRotationPivot(x, y, z); }
 
     getTotalSplats()  { return this._totalSplats; }
     getLoadedSplats() { return this._loadedSplats; }
@@ -178,6 +195,8 @@ export class GaussianView {
 
                 if (msg.type === 'chunk') {
                     this._totalSplats  = msg.totalCount;
+                    this._sourceSplats = msg.sourceCount || msg.totalCount;
+                    this._sampled      = !!msg.sampled;
                     this._loadedSplats = msg.offset + msg.count;
                     this._splat.appendChunk(
                         msg.texData,
@@ -197,6 +216,8 @@ export class GaussianView {
 
                 } else if (msg.type === 'done') {
                     this._totalSplats = msg.totalCount;
+                    this._sourceSplats = msg.sourceCount || msg.totalCount;
+                    this._sampled      = !!msg.sampled;
                     this._parseMs     = msg.parseMs;
                     this._totalMs     = performance.now() - tAll0;
                     this._worker.terminate();
@@ -205,7 +226,8 @@ export class GaussianView {
                     this._splat._sortNeeded = true;
                     this._forceSortOnce = true;
                     this._lastSortAt = -1e9;
-                    resolve({ totalCount: msg.totalCount, fetchMs: this._fetchMs, parseMs: this._parseMs, totalMs: this._totalMs });
+                    this._splat.setVisible(true);
+                    resolve({ totalCount: msg.totalCount, sourceCount: this._sourceSplats, sampled: this._sampled, fetchMs: this._fetchMs, parseMs: this._parseMs, totalMs: this._totalMs });
 
                 } else if (msg.type === 'error') {
                     this._worker.terminate();

@@ -20,6 +20,7 @@
 
 const CHUNK_SIZE = 131072;      // splats per posted chunk (reduce worker messaging overhead)
 const SH_C0 = 0.2820947917;    // SH band-0 coefficient
+const MAX_INDEXABLE_SPLATS = 20000000;
 
 /* ---------- helpers ---------- */
 
@@ -112,7 +113,7 @@ self.onmessage = function (e) {
 
     const buffer = msg.buffer;
     const options = msg.options || {};
-    const maxSplats = Math.max(100000, Math.min(20000000, options.maxSplats || 20000000));
+    const maxSplats = Math.max(100000, Math.min(MAX_INDEXABLE_SPLATS, options.maxSplats || MAX_INDEXABLE_SPLATS));
     const shDegree = Math.max(0, Math.min(3, options.shDegree || 0));
     const t0 = performance.now();
 
@@ -128,7 +129,9 @@ self.onmessage = function (e) {
 
         // Validate enough data
         const available = (buffer.byteLength - dataOffset) / bytesPerSplat | 0;
-        const totalCount = Math.min(vertexCount, available, maxSplats);
+        const sourceCount = Math.min(vertexCount, available);
+        const totalCount = Math.min(sourceCount, maxSplats);
+        const sampled = sourceCount > totalCount;
 
         // Required indices
         const xi   = pi['x']       ?? -1, yi  = pi['y']     ?? -1, zi  = pi['z']     ?? -1;
@@ -161,7 +164,9 @@ self.onmessage = function (e) {
 
         if (!hasPos) throw new Error('PLY: missing x/y/z properties');
 
-        const dataView = new DataView(buffer, dataOffset, totalCount * bytesPerSplat);
+        // Must cover full source range because oversized scenes sample across sourceCount,
+        // not just the first totalCount splats.
+        const dataView = new DataView(buffer, dataOffset, sourceCount * bytesPerSplat);
 
         // Precompute byte offsets for hot-loop fields
         const xB = xi * 4, yB = yi * 4, zB = zi * 4;
@@ -175,10 +180,12 @@ self.onmessage = function (e) {
         const shG = [];
         const shB = [];
         if (shCoeffCount > 0) {
+            // Standard 3DGS PLY channel-first layout:
+            // f_rest_0..N-1 = R coefficients, f_rest_N..2N-1 = G, f_rest_2N..3N-1 = B
             const gOff = shCoeffCount;
             const bOff = shCoeffCount * 2;
             for (let c = 0; c < shCoeffCount; c++) {
-                const piR = restMap[c] ?? -1;
+                const piR = restMap[c]        ?? -1;
                 const piG = restMap[gOff + c] ?? -1;
                 const piB = restMap[bOff + c] ?? -1;
                 shR[c] = piR >= 0 ? piR * 4 : -1;
@@ -205,7 +212,13 @@ self.onmessage = function (e) {
             const radii = new Float32Array(count);
 
             for (let i = 0; i < count; i++) {
-                const rowByte = (chunkStart + i) * bytesPerSplat;
+                // For oversized scenes, use deterministic uniform sampling over full range
+                // instead of taking only the first N splats.
+                const k = chunkStart + i;
+                const srcIndex = sampled
+                    ? Math.min(sourceCount - 1, Math.floor(((k + 0.5) * sourceCount) / totalCount))
+                    : k;
+                const rowByte = srcIndex * bytesPerSplat;
 
                 /* --- position --- */
                 const px = hasPos ? dataView.getFloat32(rowByte + xB, littleEndian) : 0;
@@ -277,19 +290,19 @@ self.onmessage = function (e) {
             if (shData) {
                 self.postMessage(
                                         { type: 'chunk', texData: texData.buffer, centers: centers.buffer, shData: shData.buffer,
-                                            radii: radii.buffer, shCoeffCount, count, offset: chunkStart, totalCount },
+                                            radii: radii.buffer, shCoeffCount, count, offset: chunkStart, totalCount, sourceCount, sampled },
                                         [texData.buffer, centers.buffer, shData.buffer, radii.buffer]
                 );
             } else {
                 self.postMessage(
                                         { type: 'chunk', texData: texData.buffer, centers: centers.buffer,
-                                            radii: radii.buffer, shCoeffCount: 0, count, offset: chunkStart, totalCount },
+                                            radii: radii.buffer, shCoeffCount: 0, count, offset: chunkStart, totalCount, sourceCount, sampled },
                                         [texData.buffer, centers.buffer, radii.buffer]
                 );
             }
         }
 
-        self.postMessage({ type: 'done', totalCount, parseMs: performance.now() - t0 });
+        self.postMessage({ type: 'done', totalCount, sourceCount, sampled, parseMs: performance.now() - t0 });
 
     } catch (err) {
         self.postMessage({ type: 'error', message: err.message });

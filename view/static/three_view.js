@@ -330,6 +330,9 @@ window._gaussian = {
   getSplatCount() { return _gaussianView?.getLoadedSplats() ?? 0; },
   getFps()        { return _gaussianView?.getFps() ?? 0; },
   setSplatScale(s){ _gaussianView?.setSplatScale(s); },
+  setVisible(v)   { _gaussianView?.setVisible(v); },
+  setModelRotationDeg(rollDeg, pitchDeg, yawDeg) { _gaussianView?.setModelRotationDeg(rollDeg, pitchDeg, yawDeg); },
+  setModelRotationPivot(x, y, z) { _gaussianView?.setModelRotationPivot(x, y, z); },
   setShDegree(d)  { _gaussianView?.setShDegree(d); },
   onResize(w, h)  { _gaussianView?.onResize(w, h); },
   setColorAdjust(key, val) { _gaussianView?.setColorAdjust(key, val); },
@@ -505,9 +508,32 @@ canvas.addEventListener('mousemove',e=>{
   if(hit){waypoints[_dragIdx].x=hit.x;waypoints[_dragIdx].y=hit.y;waypoints[_dragIdx].z=wpZ;wpMarkers[_dragIdx].position.set(hit.x,hit.y,wpZ);rebuildTrajLine();recomputeQuaternions();}
 });
 canvas.addEventListener('mouseup',()=>{if(_dragActive){_dragActive=false;_dragIdx=-1;controls.enabled=!drawMode;}});
-// Double-click on viewer toggles Pick mode (when a point cloud is loaded and no other mode is active)
+// Double-click behavior:
+// - In GS mode: set rotation pivot to clicked viewport world position.
+// - In PCD mode: toggle Pick mode (legacy behavior).
 canvas.addEventListener('dblclick',e=>{
-  if(!(pointCloud||_liveCloud)||drawMode||lassoMode||eraserMode)return;
+  if(drawMode||lassoMode||eraserMode)return;
+
+  const tabGs=document.getElementById('tab-gs');
+  const gsActive=!!(tabGs&&tabGs.classList.contains('active'));
+  if(gsActive && window._gaussian?.getSplatCount?.()>0){
+    const rect=canvas.getBoundingClientRect();
+    const ndc=new THREE.Vector2(((e.clientX-rect.left)/rect.width)*2-1,-((e.clientY-rect.top)/rect.height)*2+1);
+    _ray.setFromCamera(ndc,camera);
+    const normal=new THREE.Vector3();
+    camera.getWorldDirection(normal);
+    const plane=new THREE.Plane().setFromNormalAndCoplanarPoint(normal,controls.target.clone());
+    const hit=new THREE.Vector3();
+    if(_ray.ray.intersectPlane(plane,hit)){
+      window._gaussian.setModelRotationPivot(hit.x,hit.y,hit.z);
+      console.log('[GS] rotation pivot set to', hit.x.toFixed(3), hit.y.toFixed(3), hit.z.toFixed(3));
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+  }
+
+  if(!(pointCloud||_liveCloud))return;
   if(typeof window.togglePick==='function'){window.togglePick();e.preventDefault();e.stopPropagation();}
 });
 

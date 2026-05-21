@@ -765,7 +765,7 @@ function switchMode(mode){
   const axesLabel=document.getElementById('axes-label');if(axesLabel)axesLabel.style.display=toCam?'none':'';
   const ovl=document.getElementById('overlay');if(ovl)ovl.style.display=(toCam||toGs)?'none':'';
   const ovlText=ovl?.querySelector('span:last-child');if(ovlText)ovlText.textContent=toGs?'':'Select a PCD file';
-  const gsOvl=document.getElementById('gs-overlay');if(gsOvl)gsOvl.style.display=toGs?'flex':'none';
+  setGsOverlay(toGs?'idle':'hidden');
   if(!toCam){
     _camActive=false;
     if(_camAbortCtrl){_camAbortCtrl.abort();_camAbortCtrl=null;}
@@ -839,6 +839,27 @@ async function _camPollLoop(){
 // end Camera mode
 
 // 鈹€鈹€ Gaussian Splatting UI 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+function setGsOverlay(mode, line1, line2){
+  const ov=document.getElementById('gs-overlay');
+  if(!ov)return;
+  const s1=ov.children[0],s2=ov.children[1];
+  if(mode==='hidden'){ov.style.display='none';return;}
+  ov.style.display='flex';
+  if(mode==='loading'){
+    ov.style.opacity='0.90';
+    if(s1)s1.textContent=line1||'Loading 3DGS scene...';
+    if(s2)s2.textContent=line2||'Please wait until parsing and sorting finish';
+  }else if(mode==='error'){
+    ov.style.opacity='0.90';
+    if(s1)s1.textContent=line1||'Load failed';
+    if(s2)s2.textContent=line2||'Please select another .ply file';
+  }else{
+    ov.style.opacity='0.35';
+    if(s1)s1.textContent='Drop a .ply file here to load';
+    if(s2)s2.textContent='or select a file from the left panel';
+  }
+}
+
 async function refreshGsList(){
   try{
     const r=await fetch('/api/gaussian_files');
@@ -852,8 +873,8 @@ async function refreshGsList(){
 }
 async function onGsFileSelect(path){
   if(!path)return;
-  const _gsOvl=document.getElementById('gs-overlay');if(_gsOvl)_gsOvl.style.display='none';
-  setStatus('Loading '+path+'\u2026','');
+  setGsOverlay('loading','Loading 3DGS scene...','Parsing '+path);
+  setStatus('Loading '+path+'\u2026','loading');
   const infoEl=document.getElementById('gs-info');
   const loadEl=document.getElementById('gs-load-ms');
   const loadingEl=document.getElementById('gs-loading');
@@ -862,15 +883,23 @@ async function onGsFileSelect(path){
   if(loadingEl)loadingEl.style.display='block';
   try{
     const shDegree=Math.max(0,Math.min(3,parseInt(document.getElementById('gs-sh-level')?.value||'0',10)||0));
-    const res=await window._gaussian.load('/api/ply?file='+encodeURIComponent(path), path, {shDegree});
+    const roll = parseFloat(document.getElementById('gs-roll')?.value || '0') || 0;
+    const pitch = parseFloat(document.getElementById('gs-pitch')?.value || '0') || 0;
+    const yaw = parseFloat(document.getElementById('gs-yaw')?.value || '0') || 0;
+    const res=await window._gaussian.load('/api/ply?file='+encodeURIComponent(path), path, {
+      shDegree,
+      modelRotationDeg: { roll, pitch, yaw }
+    });
     const n=window._gaussian.getSplatCount();
     if(infoEl)infoEl.textContent=n.toLocaleString()+' splats | '+window._gaussian.getFps()+' fps';
     if(loadEl)loadEl.textContent='load: '+Math.round((res?.totalMs??(performance.now()-t0)))+' ms';
     setStatus('Loaded '+n.toLocaleString()+' Gaussians','ok');
+    setGsOverlay('hidden');
     _logUI('gs','loaded '+path+' ('+n+' splats)','ok');
   }catch(e){
     if(infoEl)infoEl.textContent='error';
     setStatus('GS load error: '+e.message,'err');
+    setGsOverlay('error','Load failed',e.message||'Unknown error');
     _logUI('gs','load error: '+e.message,'err');
   }finally{
     if(loadingEl)loadingEl.style.display='none';
@@ -879,6 +908,25 @@ async function onGsFileSelect(path){
 function setGsShLevel(v){
   const lv=Math.max(0,Math.min(3,parseInt(v,10)||0));
   window._gaussian?.setShDegree?.(lv);
+}
+
+function setGsRotationFromUi(){
+  const roll = parseFloat(document.getElementById('gs-roll')?.value || '0') || 0;
+  const pitch = parseFloat(document.getElementById('gs-pitch')?.value || '0') || 0;
+  const yaw = parseFloat(document.getElementById('gs-yaw')?.value || '0') || 0;
+  window._gaussian?.setModelRotationDeg?.(roll, pitch, yaw);
+  _logUI('gs-rot', `r=${roll}, p=${pitch}, y=${yaw}`, 'ok');
+}
+
+function resetGsRotation(){
+  const er=document.getElementById('gs-roll');
+  const ep=document.getElementById('gs-pitch');
+  const ey=document.getElementById('gs-yaw');
+  if(er)er.value='0';
+  if(ep)ep.value='0';
+  if(ey)ey.value='0';
+  window._gaussian?.setModelRotationDeg?.(0,0,0);
+  _logUI('gs-rot', 'reset to 0,0,0', 'ok');
 }
 
 // ── GS Color Adjustment ──

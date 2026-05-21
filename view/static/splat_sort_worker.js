@@ -9,7 +9,7 @@
  *     totalCount:N, camPos:[x,y,z], camFwd:[fx,fy,fz],
  *     focal:number, maxVisible:number, minPx:number, farCull:number }
  * Message out:
- *   { type:'sorted', indices:ArrayBuffer(Float32, M), sortTime:ms, cullTime:ms, visibleCount:number }
+ *   { type:'sorted', indices:ArrayBuffer(Uint32, M), sortTime:ms, cullTime:ms, visibleCount:number }
  */
 
 'use strict';
@@ -66,69 +66,37 @@ function floatToSortKey(f) {
 self.onmessage = function (e) {
     const msg = e.data;
     if (msg.type !== 'sort') return;
+    const seq = msg.seq | 0;
 
-    const { totalCount: N, camPos, camFwd, focal, maxVisible, minPx, farCull } = msg;
+    const { totalCount: N, camPos, camFwd, maxVisible } = msg;
     const centers = new Float32Array(msg.centers);
     const radii = msg.radii ? new Float32Array(msg.radii) : null;
 
     const cpx = camPos[0], cpy = camPos[1], cpz = camPos[2];
     const cfx = camFwd[0], cfy = camFwd[1], cfz = camFwd[2];
 
-    /* ── Phase 1: Visibility culling (moved from main thread) ── */
+    /* ── Phase 1: Stable working set selection (SuperSplat-style) ── */
     const tCull0 = performance.now();
 
-    // Pre-allocate to avoid dynamic push() GC pressure
-    const visibleBuf = new Uint32Array(Math.min(N, maxVisible + 1024));
-    let visCount = 0;
-
-    for (let i = 0; i < N; i++) {
-        const bx = centers[i*3]   - cpx;
-        const by = centers[i*3+1] - cpy;
-        const bz = centers[i*3+2] - cpz;
-        const depth = bx*cfx + by*cfy + bz*cfz;
-        // Use radius margin: a splat whose center is slightly behind the camera
-        // but whose physical extent crosses the view plane should still be included.
-        const radius = radii ? radii[i] : 1.0;
-        if (depth + radius <= 0.0 || depth > farCull) continue;
-        const pxRadius = focal * radius / Math.max(depth, 0.1);
-        if (pxRadius < minPx) continue;
-        if (visCount < visibleBuf.length) {
-            visibleBuf[visCount] = i;
-        }
-        visCount++;
-    }
-
-    const cullTime = performance.now() - tCull0;
-
-    /* ── Phase 1b: Apply maxVisible cap ── */
+    // Keep selected splat set stable across camera motion.
+    // This avoids visible-set thrashing/pop-in when rapidly retreating or orbiting.
     let activeIndices;
     let activeCount;
 
-    if (visCount === 0) {
-        // Safety fallback: never blank the scene
-        if (N > maxVisible) {
-            activeIndices = new Uint32Array(maxVisible);
-            const step = N / maxVisible;
-            for (let i = 0; i < maxVisible; i++) activeIndices[i] = Math.floor(i * step);
-            activeCount = maxVisible;
-        } else {
-            activeIndices = new Uint32Array(N);
-            for (let i = 0; i < N; i++) activeIndices[i] = i;
-            activeCount = N;
+    if (N > maxVisible) {
+        activeIndices = new Uint32Array(maxVisible);
+        const step = N / maxVisible;
+        for (let i = 0; i < maxVisible; i++) {
+            activeIndices[i] = Math.floor(i * step);
         }
-    } else if (visCount > maxVisible) {
-        const actualVis = Math.min(visCount, visibleBuf.length);
-        const step = Math.ceil(actualVis / maxVisible);
-        activeIndices = new Uint32Array(Math.ceil(actualVis / step));
-        let j = 0;
-        for (let i = 0; i < actualVis; i += step) {
-            activeIndices[j++] = visibleBuf[i];
-        }
-        activeCount = j;
+        activeCount = maxVisible;
     } else {
-        activeCount = Math.min(visCount, visibleBuf.length);
-        activeIndices = visibleBuf.subarray(0, activeCount);
+        activeIndices = new Uint32Array(N);
+        for (let i = 0; i < N; i++) activeIndices[i] = i;
+        activeCount = N;
     }
+
+    const cullTime = performance.now() - tCull0;
 
     /* ── Phase 2: Radix sort back-to-front ── */
     const t0 = performance.now();
@@ -149,9 +117,8 @@ self.onmessage = function (e) {
 
     radixSort(keys, indices, M);
 
-    // Return as Float32Array (integers exact up to 2^24 = 16M splats)
-    const result = new Float32Array(M);
-    for (let i = 0; i < M; i++) result[i] = indices[i];
+    const result = new Uint32Array(M);
+    result.set(indices);
 
     const sortTime = performance.now() - t0;
     // Return the transferred centers/radii buffers back to the main thread
@@ -159,8 +126,8 @@ self.onmessage = function (e) {
     if (msg.centers) transferList.push(msg.centers);
     if (msg.radii)   transferList.push(msg.radii);
     self.postMessage(
-        { type: 'sorted', indices: result.buffer, sortTime, cullTime, visibleCount: visCount,
-          centers: msg.centers || null, radii: msg.radii || null },
+                { type: 'sorted', indices: result.buffer, sortTime, cullTime, visibleCount: activeCount,
+                    centers: msg.centers || null, radii: msg.radii || null, seq },
         transferList
     );
 };
