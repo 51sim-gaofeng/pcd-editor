@@ -805,7 +805,7 @@ async function loadFileAbs(absPath){
 }
 refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();
 // 鈹€鈹€ Camera mode (GVSP UDP receiver) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-const _CAM_PCD_SECTIONS=['sec-file','sec-view','sec-play','sec-dds','sec-traj','sec-edit'];
+const _CAM_PCD_SECTIONS=['sec-file','sec-view','sec-play','sec-streaming','sec-dds','sec-traj','sec-edit'];
 let _camMode=false,_camActive=false,_camLastId=-1;
 let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0,_camLastBuf=null;
 let _camShowFps=true;
@@ -924,6 +924,7 @@ function switchMode(mode){
   document.getElementById('tab-cam').classList.toggle('active',toCam);
   const tabGs=document.getElementById('tab-gs');if(tabGs)tabGs.classList.toggle('active',toGs);
   _CAM_PCD_SECTIONS.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toGs)?'none':'';});
+  if((toCam||toGs)&&_smActive)streamingStop();
   const secCam=document.getElementById('sec-camera');if(secCam)secCam.style.display=toCam?'':'none';
   const secGs=document.getElementById('sec-gs');if(secGs)secGs.style.display=toGs?'':'none';
   const camWrap=document.getElementById('camera-wrap');if(camWrap)camWrap.classList.toggle('active',toCam);
