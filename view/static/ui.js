@@ -642,7 +642,7 @@ refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();
 // 鈹€鈹€ Camera mode (GVSP UDP receiver) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 const _CAM_PCD_SECTIONS=['sec-file','sec-view','sec-play','sec-dds','sec-traj','sec-edit'];
 let _camMode=false,_camActive=false,_camLastId=-1;
-let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0;
+let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0,_camLastBuf=null;
 let _camShowFps=true;
 function _camGetCanvasCtx(){
   const cv=document.getElementById('camera-canvas');if(!cv)return null;
@@ -657,7 +657,7 @@ function camToggleFps(on){
   badge.textContent=_camFps.toFixed(1)+' FPS';
 }
 function _camResetRender(){
-  _camRenderBusy=false;_camPendingFrame=null;_camFpsTs=0;_camFpsFrames=0;_camFps=0;
+  _camRenderBusy=false;_camPendingFrame=null;_camLastBuf=null;_camFpsTs=0;_camFpsFrames=0;_camFps=0;
   const img=document.getElementById('camera-img');
   if(img){img.onload=null;img.onerror=null;img.src='';img.style.display='none';}
   if(_camCurrentBlobUrl){URL.revokeObjectURL(_camCurrentBlobUrl);_camCurrentBlobUrl=null;}
@@ -720,6 +720,7 @@ function _camRenderFallback(fid,buf){
   });
 }
 async function _camRenderFrame(fid,buf){
+  _camLastBuf=buf;
   if(typeof createImageBitmap==='function'){
     try{
       const bitmap=await createImageBitmap(new Blob([buf],{type:'image/jpeg'}));
@@ -837,6 +838,14 @@ async function _camPollLoop(){
   _camAbortCtrl=null;
 }
 // end Camera mode
+(function(){
+  const wrap=document.getElementById('camera-wrap');
+  if(!wrap||typeof ResizeObserver==='undefined')return;
+  new ResizeObserver(()=>{
+    if(!_camMode||!_camLastBuf)return;
+    _camQueueFrame(_camLastId,_camLastBuf);
+  }).observe(wrap);
+})();
 
 // 鈹€鈹€ Gaussian Splatting UI 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 function setGsOverlay(mode, line1, line2){
