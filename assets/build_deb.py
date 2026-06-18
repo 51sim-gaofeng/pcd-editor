@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Build a .deb package for pcd-viewer after PyInstaller.
+Build a .deb package for 51sim Sensor Data Viewer after PyInstaller.
 Called by CI: python assets/build_deb.py <version> <binary>
   version : e.g.  0.1.1
-  binary  : path to the built binary, e.g. dist/pcd_viewer
+    binary  : path to the built binary, e.g. dist/51sim_sensor_viewer
 """
 import os
 import stat
@@ -17,7 +17,7 @@ def main():
 
     ver = sys.argv[1].lstrip('v')
     binary = Path(sys.argv[2])
-    pkg = 'pcd-viewer'
+    pkg = '51sim-sensor-viewer'
     arch = 'amd64'
     root = Path('deb_build')
     dist = Path('dist')
@@ -34,14 +34,14 @@ def main():
 
     # ── Binary ────────────────────────────────────────────────────────────
     import shutil
-    dest_bin = root / 'usr' / 'local' / 'bin' / 'pcd-viewer'
+    dest_bin = root / 'usr' / 'local' / 'bin' / '51sim-sensor-viewer'
     shutil.copy2(binary, dest_bin)
     dest_bin.chmod(dest_bin.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     # ── Icon ──────────────────────────────────────────────────────────────
     icon_src = Path('assets') / 'icon.png'
     if icon_src.exists():
-        shutil.copy2(icon_src, root / 'usr' / 'share' / 'pixmaps' / 'pcd-viewer.png')
+        shutil.copy2(icon_src, root / 'usr' / 'share' / 'pixmaps' / '51sim-sensor-viewer.png')
 
     # ── DEBIAN/control ────────────────────────────────────────────────────
     (root / 'DEBIAN' / 'control').write_text(
@@ -52,8 +52,8 @@ def main():
         f"Depends: libgtk-3-0, libwebkit2gtk-4.0-37 | libwebkit2gtk-4.1-0\n"
         f"Section: utils\n"
         f"Priority: optional\n"
-        f"Description: 4DGS Lidar PCD Viewer\n"
-        f" Web-based point cloud visualizer using Three.js.\n"
+        f"Description: 51sim Sensor Data Viewer\n"
+        f" Web-based sensor visualizer using Three.js.\n"
         f" Supports .pcd files with height/intensity coloring,\n"
         f" lasso selection, trajectory editing, and pywebview native window.\n"
     )
@@ -78,12 +78,12 @@ def main():
     postinst.chmod(postinst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     # ── .desktop ──────────────────────────────────────────────────────────
-    (root / 'usr' / 'share' / 'applications' / 'pcd-viewer.desktop').write_text(
+    (root / 'usr' / 'share' / 'applications' / '51sim-sensor-viewer.desktop').write_text(
         "[Desktop Entry]\n"
-        "Name=PCD Viewer\n"
-        "Comment=4DGS Lidar Point Cloud Viewer\n"
-        "Exec=/usr/local/bin/pcd-viewer\n"
-        "Icon=pcd-viewer\n"
+        "Name=51sim Sensor Data Viewer\n"
+        "Comment=51sim sensor visualizer\n"
+        "Exec=/usr/local/bin/51sim-sensor-viewer\n"
+        "Icon=51sim-sensor-viewer\n"
         "Terminal=false\n"
         "Type=Application\n"
         "Categories=Science;Engineering;\n"
@@ -92,7 +92,7 @@ def main():
     # ── copyright ─────────────────────────────────────────────────────────
     (root / 'usr' / 'share' / 'doc' / pkg / 'copyright').write_text(
         "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n"
-        "Upstream-Name: pcd-viewer\n"
+        "Upstream-Name: 51sim-sensor-viewer\n"
         "License: MIT\n"
     )
 
@@ -104,12 +104,6 @@ def main():
         sys.exit(ret)
 
     print(f"Built: {deb_path}  ({deb_path.stat().st_size // 1024} KB)")
-
-    # Write to GITHUB_ENV if available
-    github_env = os.environ.get('GITHUB_ENV')
-    if github_env:
-        with open(github_env, 'a') as f:
-            f.write(f"DEB_FILE={deb_name}\n")
 
 if __name__ == '__main__':
     main()

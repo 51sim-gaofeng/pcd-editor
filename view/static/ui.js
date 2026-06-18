@@ -183,7 +183,7 @@ let _ddsPending=null; // {floats, nfields, fields, fid, npoints} | null
 // Foxglove 椋庢牸锛氭覆鏌撻绠楋紙鍥哄畾甯х巼涓婇檺锛? 鑷€傚簲鐐规暟棰勭畻
 let _ddsRenderFpsCap=20,_ddsRenderMinInterval=1000/20,_ddsLastRenderAt=0;
 let _ddsAdaptive=true,_ddsRenderMsEwma=0,_ddsAdaptCooldownUntil=0;
-let _ddsCurrentMaxPoints=60000,_ddsAutoMinPoints=10000,_ddsAutoMaxPoints=1000000;
+let _ddsCurrentMaxPoints=1000000,_ddsAutoMinPoints=10000,_ddsAutoMaxPoints=1000000;
 let _ddsLastUiStatusAt=0,_ddsLastZRangeAt=0;
 let _ddsLastUiStatusFid=-1,_ddsLastUiStatusTs=0;
 let _ddsFetchedCount=0,_ddsRenderedCount=0,_ddsOverwrittenCount=0;
@@ -546,7 +546,8 @@ function _smRenderTick(){
     const{floats,nfields,fields,fid,npoints}=_smPending;
     _smPending=null;
     const r0=performance.now();
-    window._three.loadPoints(floats,nfields,fields);
+    if(window._three&&window._three.updateLive)window._three.updateLive(floats,nfields,fields);
+    else window._three.loadPoints(floats,nfields,fields);
     if(npoints>0&&now-600>0)_applyZRange(floats,nfields,fields);
     _smLastRenderAt=now;
     _smFpsTick();
@@ -582,7 +583,7 @@ async function streamingToggle(){
   document.getElementById('streaming-status').textContent='connecting\u2026';
   document.getElementById('streaming-status').style.color='#facc15';
   streamingSetRenderFpsFromUI(document.getElementById('streaming-render-fps')?.value||'10');
-  _smSetMaxPoints(document.getElementById('streaming-max-pts')?.value||_smCurrentMaxPoints,true);
+  _smSetMaxPoints(document.getElementById('streaming-max-pts')?.value||1000000,true);
   setStatus('Streaming: waiting for frames\u2026','loading');
   requestAnimationFrame(_smRenderTick);
   _smStartPoll();

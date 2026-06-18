@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 Smoke test for pcd_viewer — tests both source (python pcd_viewer.py)
-and packaged exe (dist/pcd_viewer.exe).
+and packaged exe (dist/51sim_sensor_viewer.exe).
 
 Usage:
     python test_smoke.py           # test source
-    python test_smoke.py --exe     # test dist/pcd_viewer.exe
+    python test_smoke.py --exe     # test dist/51sim_sensor_viewer.exe
 """
 
 import argparse
@@ -21,7 +21,7 @@ HOST   = "127.0.0.1"
 BASE   = f"http://{HOST}:{PORT}"
 SCRIPT = os.path.join(os.path.dirname(__file__), "pcd_viewer.py")
 # Binary name differs by platform: .exe on Windows, no extension on Linux/macOS
-_BIN   = "pcd_viewer.exe" if sys.platform == "win32" else "pcd_viewer"
+_BIN   = "51sim_sensor_viewer.exe" if sys.platform == "win32" else "51sim_sensor_viewer"
 EXE    = os.path.join(os.path.dirname(__file__), "dist", _BIN)
 
 CHECKS = [

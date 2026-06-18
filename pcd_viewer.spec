@@ -107,7 +107,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='pcd_viewer',
+    name='51sim_sensor_viewer',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

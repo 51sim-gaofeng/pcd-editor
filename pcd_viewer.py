@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PCD Viewer — Web-based point cloud visualizer using Three.js
+51sim Sensor Data Viewer — Web-based sensor visualizer using Three.js
 Usage: python3 pcd_viewer.py [data_dir] [port]
   data_dir : directory containing .pcd files  (default: script directory)
   port     : HTTP port                         (default: 8089)
@@ -95,7 +95,7 @@ def main():
     server.daemon_threads = True
     _disp_host = 'localhost' if bind_host in ('0.0.0.0', '127.0.0.1', '::') else bind_host
     url = f"http://{_disp_host}:{config.port}"
-    print(f"PCD Viewer  ->  {url}  (bind {bind_host})")
+    print(f"51sim Sensor Data Viewer  ->  {url}  (bind {bind_host})")
     print(f"Data dir  : {config.data_dir}")
     n_files = len(list_pcd_files())
     print(f"PCD files : {n_files} found")
@@ -141,7 +141,7 @@ def main():
 
         print("Opening native window (pywebview)...")
         webview.create_window(
-            "4DGS Lidar PCD Viewer",
+            "51sim Sensor Data Viewer",
             url,
             width=1440,
             height=900,

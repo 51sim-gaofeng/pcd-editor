@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>4DGS Lidar PCD Viewer</title>
+<title>51sim Sensor Data Viewer</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <div id="main-row">
 <aside id="sidebar">
-  <h1>&#9729; 4DGS Lidar PCD Viewer</h1>
+  <h1>&#9729; 51sim Sensor Data Viewer</h1>
   <div id="mode-tabs">
-    <button class="mode-tab active" id="tab-pcd" onclick="switchMode('pcd')">&#9729; PCD Viewer</button>
+    <button class="mode-tab active" id="tab-pcd" onclick="switchMode('pcd')">&#9729; Lidar</button>
     <button class="mode-tab" id="tab-cam" onclick="switchMode('cam')">&#128247; Camera</button>
     <button class="mode-tab" id="tab-gs"  onclick="switchMode('gs')">&#127875; 3DGS</button>
   </div>
@@ -154,10 +154,10 @@
       <hr style="border-color:#334155;margin:6px 0">
       <div class="row" style="justify-content:center;margin-top:4px;gap:6px;align-items:center">
         <span style="font-size:.65rem;color:#64748b;white-space:nowrap">Max pts</span>
-        <input type="range" id="streaming-max-pts" min="10000" max="1000000" step="10000" value="60000"
+         <input type="range" id="streaming-max-pts" min="10000" max="1000000" step="10000" value="1000000"
                style="flex:1;accent-color:#a78bfa"
                oninput="streamingSetMaxPointsFromUI(this.value)">
-        <span id="streaming-max-pts-val" style="font-size:.65rem;color:#94a3b8;min-width:30px">60k</span>
+         <span id="streaming-max-pts-val" style="font-size:.65rem;color:#94a3b8;min-width:30px">1000k</span>
       </div>
       <div class="row" style="justify-content:center;margin-top:4px;gap:6px;align-items:center">
         <span style="font-size:.65rem;color:#64748b;white-space:nowrap">Render FPS</span>

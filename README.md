@@ -1,6 +1,6 @@
-# 4DGS Lidar PCD Viewer
+# 51sim Sensor Data Viewer
 
-Web-based 3D point cloud visualizer powered by Python (HTTP server) + Three.js (browser rendering). Supports both static `.pcd` files and **live point clouds via UDP/DDS**.
+Web-based sensor visualizer powered by Python (HTTP server) + Three.js (browser rendering). Supports both static `.pcd` files and **live point clouds via UDP/DDS**.
 
 ---
 

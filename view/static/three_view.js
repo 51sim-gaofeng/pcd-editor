@@ -603,7 +603,7 @@ function buildPointCloud(floats,nfields,fields,mode,filt){
     displayedToRaw=idxs;
   }else{displayedToRaw=null;}
   const n=idxs?idxs.length:np;
-  const pos=new Float32Array(n*3),col=new Float32Array(n*3);
+  const pos=new Float32Array(n*3),col=new Uint8Array(n*3);
   // Pass 1: find Z/intensity range
   let zMn=Infinity,zMx=-Infinity,iMn=Infinity,iMx=-Infinity;
   for(let k=0;k<n;k++){const i=idxs?idxs[k]:k;const z=floats[i*nfields+zi];if(z<zMn)zMn=z;if(z>zMx)zMx=z;if(ii>=0){const iv=floats[i*nfields+ii];if(iv<iMn)iMn=iv;if(iv>iMx)iMx=iv;}}
@@ -613,15 +613,26 @@ function buildPointCloud(floats,nfields,fields,mode,filt){
     // Auto-lock on first frame
     lockZRange(zMn,zMx);
   }
-  const zR=zMx-zMn||1,iR=iMx-iMn||1;
+  const zR=zMx-zMn||1;
   // Pass 2: fill buffers
   for(let k=0;k<n;k++){
     const i=idxs?idxs[k]:k,b=i*nfields;
     pos[k*3]=floats[b+xi]*flipX;pos[k*3+1]=floats[b+yi]*flipY;pos[k*3+2]=floats[b+zi]*flipZ;
-    let r,g,bl;if(mode==='height')[r,g,bl]=heightColor((floats[b+zi]-zMn)/zR);else if(mode==='intensity'&&ii>=0)[r,g,bl]=heightColor((floats[b+ii]-iMn)/iR);else{r=0.4;g=0.8;bl=1.0;}
-    col[k*3]=r;col[k*3+1]=g;col[k*3+2]=bl;
+    let r,g,bl;
+    if(mode==='height'){
+      [r,g,bl]=heightColor((floats[b+zi]-zMn)/zR);
+    }else if(mode==='intensity'&&ii>=0){
+      const rawInt=Math.max(0,Math.min(255,((floats[b+ii]||0)*255+0.5)|0));
+      const lo=rawInt*3;
+      r=_streamingIntensityLUT[lo]/255;
+      g=_streamingIntensityLUT[lo+1]/255;
+      bl=_streamingIntensityLUT[lo+2]/255;
+    }else{r=0.4;g=0.8;bl=1.0;}
+    col[k*3]=Math.max(0,Math.min(255,Math.round(r*255)));
+    col[k*3+1]=Math.max(0,Math.min(255,Math.round(g*255)));
+    col[k*3+2]=Math.max(0,Math.min(255,Math.round(bl*255)));
   }
-  const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(pos,3));geo.setAttribute('color',new THREE.BufferAttribute(col,3));geo.computeBoundingBox();
+  const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(pos,3));geo.setAttribute('color',new THREE.BufferAttribute(col,3,true));geo.computeBoundingBox();
   return new THREE.Points(geo,new THREE.PointsMaterial({size:ptSize*0.05,vertexColors:true,sizeAttenuation:true}));
 }
 function _rawPointsFromFloats(){
@@ -666,12 +677,45 @@ const _liveColorLUT=(function(){
   }
   return lut;
 })();
+const _heightColorByteLUT=(function(){
+  const lut=new Uint8Array(_LUT_SIZE*3);
+  for(let i=0;i<_LUT_SIZE*3;i++)lut[i]=Math.max(0,Math.min(255,Math.round(_liveColorLUT[i]*255)));
+  return lut;
+})();
+const _streamingIntensityLUT=(function(){
+  const lut=new Uint8Array(256*3);
+  for(let i=0;i<=255;i++){
+    let r=0,g=0,b=0;
+    if(i<=33){
+      r=0;
+      g=7.727*i;
+      b=255;
+    }else if(i<=66){
+      r=0;
+      g=255;
+      b=255-7.727*(i-34);
+    }else if(i<=100){
+      r=7.727*(i-67);
+      g=255;
+      b=0;
+    }else{
+      r=255;
+      g=255-7.727*(i-100)/4.697;
+      b=0;
+    }
+    const o=i*3;
+    lut[o]=Math.max(0,Math.min(255,Math.round(r)));
+    lut[o+1]=Math.max(0,Math.min(255,Math.round(g)));
+    lut[o+2]=Math.max(0,Math.min(255,Math.round(b)));
+  }
+  return lut;
+})();
 function _ensureLiveCloud(n){
   if(n<=_liveCapN&&_liveCloud)return;
   const cap=n+65536; // 64k headroom
-  const posArr=new Float32Array(cap*3),colArr=new Float32Array(cap*3);
+  const posArr=new Float32Array(cap*3),colArr=new Uint8Array(cap*3);
   const posAttr=new THREE.BufferAttribute(posArr,3);posAttr.setUsage(THREE.DynamicDrawUsage);
-  const colAttr=new THREE.BufferAttribute(colArr,3);colAttr.setUsage(THREE.DynamicDrawUsage);
+  const colAttr=new THREE.BufferAttribute(colArr,3,true);colAttr.setUsage(THREE.DynamicDrawUsage);
   const geo=new THREE.BufferGeometry();geo.setAttribute('position',posAttr);geo.setAttribute('color',colAttr);
   // Skip Three.js's per-frame computeBoundingSphere (which would scan all N points
   // every render). Live cloud is always in-view from the user's perspective; pre-set
@@ -691,9 +735,8 @@ function _updateLiveBuffers(floats,nfields,fields,mode){
   const np=(floats.length/nfields)|0;
   _ensureLiveCloud(np);
   const tEnsured=performance.now();
-  const pos=_livePosArr,col=_liveColArr,lut=_liveColorLUT;
+  const pos=_livePosArr,col=_liveColArr;
   const fx=flipX,fy=flipY,fz=flipZ;
-  const lutMax=_LUT_SIZE-1;
   // Color range used THIS frame (prefer locked range; else last frame's range; else scan).
   let useZMn,useZMx,useIMn,useIMx;
   let needFirstScan=false;
@@ -720,8 +763,7 @@ function _updateLiveBuffers(floats,nfields,fields,mode){
     if(useIMn===undefined){useIMn=iMn;useIMx=iMx;}
     _liveLastZMn=zMn;_liveLastZMx=zMx;_liveLastIMn=iMn;_liveLastIMx=iMx;
   }
-  const zR=(useZMx-useZMn)||1,iR=(useIMx-useIMn)||1;
-  const invZ=lutMax/zR,invI=lutMax/iR;
+  const zR=(useZMx-useZMn)||1;
   // Single-pass: write pos+col, accumulate next-frame z/i range.
   let nzMn=Infinity,nzMx=-Infinity,niMn=Infinity,niMx=-Infinity;
   if(mode==='height'){
@@ -729,9 +771,9 @@ function _updateLiveBuffers(floats,nfields,fields,mode){
       const b=i*nfields;const x=floats[b+xi],y=floats[b+yi],z=floats[b+zi];
       const o=i*3;pos[o]=x*fx;pos[o+1]=y*fy;pos[o+2]=z*fz;
       if(z<nzMn)nzMn=z;if(z>nzMx)nzMx=z;
-      let t=(z-useZMn)*invZ;if(t<0)t=0;else if(t>lutMax)t=lutMax;
-      const k=t|0;const lo=k*3;
-      col[o]=lut[lo];col[o+1]=lut[lo+1];col[o+2]=lut[lo+2];
+      let t=((z-useZMn)/zR*_LUT_SIZE)|0;if(t<0)t=0;else if(t>=_LUT_SIZE)t=_LUT_SIZE-1;
+      const lo=t*3;
+      col[o]=_heightColorByteLUT[lo];col[o+1]=_heightColorByteLUT[lo+1];col[o+2]=_heightColorByteLUT[lo+2];
     }
   }else if(mode==='intensity'&&ii>=0){
     for(let i=0;i<np;i++){
@@ -739,9 +781,11 @@ function _updateLiveBuffers(floats,nfields,fields,mode){
       const o=i*3;pos[o]=x*fx;pos[o+1]=y*fy;pos[o+2]=z*fz;
       if(z<nzMn)nzMn=z;if(z>nzMx)nzMx=z;
       if(iv<niMn)niMn=iv;if(iv>niMx)niMx=iv;
-      let t=(iv-useIMn)*invI;if(t<0)t=0;else if(t>lutMax)t=lutMax;
-      const k=t|0;const lo=k*3;
-      col[o]=lut[lo];col[o+1]=lut[lo+1];col[o+2]=lut[lo+2];
+      const rawInt=Math.max(0,Math.min(255,((iv||0)*255+0.5)|0));
+      const lo=rawInt*3;
+      col[o]=_streamingIntensityLUT[lo];
+      col[o+1]=_streamingIntensityLUT[lo+1];
+      col[o+2]=_streamingIntensityLUT[lo+2];
     }
   }else{
     // Solid color path 鈥?no LUT lookup, no min/max for color, but still track z/i for next frame.
@@ -750,7 +794,7 @@ function _updateLiveBuffers(floats,nfields,fields,mode){
       const o=i*3;pos[o]=x*fx;pos[o+1]=y*fy;pos[o+2]=z*fz;
       if(z<nzMn)nzMn=z;if(z>nzMx)nzMx=z;
       if(ii>=0){const iv=floats[b+ii];if(iv<niMn)niMn=iv;if(iv>niMx)niMx=iv;}
-      col[o]=0.4;col[o+1]=0.8;col[o+2]=1.0;
+      col[o]=102;col[o+1]=204;col[o+2]=255;
     }
   }
   if(np>0){

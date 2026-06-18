@@ -11,7 +11,7 @@ def _state_path() -> str:
         base = os.environ.get('APPDATA', os.path.expanduser('~'))
     else:
         base = os.path.join(os.path.expanduser('~'), '.config')
-    return os.path.join(base, 'pcd_viewer', 'state.json')
+    return os.path.join(base, '51sim_sensor_viewer', 'state.json')
 
 
 def save_last_dir(path: str) -> None:
@@ -61,8 +61,8 @@ config = _Config()
 
 def init_from_args(argv):
     ap = argparse.ArgumentParser(
-        prog='pcd_viewer',
-        description='4DGS Lidar PCD Viewer (Three.js web UI)',
+        prog='51sim_sensor_viewer',
+        description='51sim Sensor Data Viewer (Three.js web UI)',
     )
     ap.add_argument('--ip',   default='127.0.0.1', help='HTTP bind address (default: 127.0.0.1)')
     ap.add_argument('--port', type=int, default=9089, help='HTTP port (default: 9089)')

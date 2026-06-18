@@ -15,10 +15,10 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            bin_name: pcd_viewer.exe
+            bin_name: 51sim_sensor_viewer.exe
             platform: windows-x64
           - os: ubuntu-22.04
-            bin_name: pcd_viewer
+            bin_name: 51sim_sensor_viewer
             platform: linux-x64
 
     runs-on: ${{ matrix.os }}
@@ -62,12 +62,12 @@ jobs:
       - name: Show binary size (Windows)
         if: runner.os == 'Windows'
         run: |
-          $mb = (Get-Item dist\pcd_viewer.exe).Length / 1MB
+          $mb = (Get-Item dist\51sim_sensor_viewer.exe).Length / 1MB
           Write-Host "binary size: $([math]::Round($mb,1)) MB"
 
       - name: Show binary size (Linux)
         if: runner.os == 'Linux'
-        run: du -sh dist/pcd_viewer
+        run: du -sh dist/51sim_sensor_viewer
 
       - name: Smoke test
         run: python test_smoke.py --exe
@@ -76,18 +76,18 @@ jobs:
       - name: Package binary-only zip (Windows)
         if: runner.os == 'Windows'
         run: |
-          Compress-Archive -Path dist\pcd_viewer.exe `
-            -DestinationPath dist\pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip
+          Compress-Archive -Path dist\51sim_sensor_viewer.exe `
+            -DestinationPath dist\51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip
 
       - name: Package binary + samples zip (Windows)
         if: runner.os == 'Windows'
         run: |
-          # staging\ contains: pcd_viewer.exe  +  sample\*.pcd
+          # staging\ contains: 51sim_sensor_viewer.exe  +  sample\*.pcd
           New-Item -ItemType Directory -Force -Path staging | Out-Null
-          Copy-Item dist\pcd_viewer.exe staging\
+          Copy-Item dist\51sim_sensor_viewer.exe staging\
           Copy-Item -Recurse sample staging\sample
           Compress-Archive -Path staging\* `
-            -DestinationPath dist\pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip
+            -DestinationPath dist\51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip
           Remove-Item -Recurse -Force staging
 
       # ── Linux packaging ────────────────────────────────────────────────────
@@ -95,31 +95,31 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           cd dist
-          zip pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip pcd_viewer
+          zip 51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip 51sim_sensor_viewer
 
       - name: Package binary + samples zip (Linux)
         if: runner.os == 'Linux'
         run: |
-          # staging/ contains: pcd_viewer  +  sample/*.pcd/*.ply
+          # staging/ contains: 51sim_sensor_viewer  +  sample/*.pcd/*.ply
           mkdir -p staging/sample
-          cp dist/pcd_viewer staging/
+          cp dist/51sim_sensor_viewer staging/
           cp sample/*.pcd staging/sample/
           cp sample/*.ply staging/sample/
           cd staging
-          zip -r ../dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip .
+          zip -r ../dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip .
           cd ..
           rm -rf staging
 
       # ── Build .deb package (Linux only) ───────────────────────────────────
       - name: Build .deb package (Linux)
         if: runner.os == 'Linux'
-        run: python assets/build_deb.py ${{ github.ref_name }} dist/pcd_viewer
+        run: python assets/build_deb.py ${{ github.ref_name }} dist/51sim_sensor_viewer
 
       # Rename raw binary so it has a version-stamped name for direct download
       - name: Rename binary for direct download (Linux)
         if: runner.os == 'Linux'
         run: |
-          cp dist/pcd_viewer dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}
+          cp dist/51sim_sensor_viewer dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}
 
       # ── Upload to Release (both platforms write to the same release) ───────
       - name: Upload to GitHub Release (Windows)
@@ -130,8 +130,8 @@ jobs:
           body_path: RELEASE_NOTES.md
           generate_release_notes: false
           files: |
-            dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip
-            dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip
+            dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip
+            dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip
 
       - name: Upload to GitHub Release (Linux)
         if: runner.os == 'Linux'
@@ -141,7 +141,7 @@ jobs:
           body_path: RELEASE_NOTES.md
           generate_release_notes: false
           files: |
-            dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}
-            dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip
-            dist/pcd_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip
-            dist/${{ env.DEB_FILE }}
+            dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}
+            dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip
+            dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip
+            dist/51sim-sensor-viewer_*.deb
