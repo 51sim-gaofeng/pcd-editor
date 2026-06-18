@@ -58,6 +58,7 @@ details[open]>summary{color:#dde4ef}
 .lbl{font-size:.7rem;color:#94a3b8;width:46px;flex-shrink:0}
 #sec-play>summary{border-left-color:#34d399;background:linear-gradient(90deg,#04201380,transparent 70%)}
 #sec-dds>summary{border-left-color:#06b6d4;background:linear-gradient(90deg,#04202a80,transparent 70%)}
+#sec-streaming>summary{border-left-color:#84cc16;background:linear-gradient(90deg,#14200280,transparent 70%)}
 #sec-file>summary{border-left-color:#38bdf8;background:linear-gradient(90deg,#071e3480,transparent 70%)}
 #sec-view>summary{border-left-color:#2dd4bf;background:linear-gradient(90deg,#051f1c80,transparent 70%)}
 #sec-filter>summary{border-left-color:#f59e0b;background:linear-gradient(90deg,#1c120080,transparent 70%)}
@@ -68,6 +69,7 @@ details{margin:3px 0;border-radius:6px;overflow:hidden}
 #sec-file   >summary{background:rgba(56,189,248,.45); border-left:5px solid #38bdf8; color:#e0f2fe}
 #sec-play   >summary{background:rgba(52,211,153,.45); border-left:5px solid #34d399; color:#d1fae5}
 #sec-dds    >summary{background:rgba(6,182,212,.45);  border-left:5px solid #06b6d4; color:#cffafe}
+#sec-streaming>summary{background:rgba(132,204,22,.40);border-left:5px solid #84cc16; color:#ecfccb}
 #sec-view   >summary{background:rgba(45,212,191,.45); border-left:5px solid #2dd4bf; color:#ccfbf1}
 #sec-filter >summary{background:rgba(245,158,11,.45); border-left:5px solid #f59e0b; color:#fef3c7}
 #sec-traj   >summary{background:rgba(251,146,60,.45); border-left:5px solid #fb923c; color:#ffedd5}
@@ -140,5 +142,5 @@ canvas{display:block;width:100%;height:100%}
 #camera-wrap.active{display:flex}
 #cam-fps-badge{display:none;position:absolute;top:16px;right:16px;z-index:7;padding:10px 14px;border-radius:12px;background:linear-gradient(135deg,rgba(236,72,153,.92),rgba(249,115,22,.92));color:#fff;font-size:1.35rem;font-weight:900;line-height:1;letter-spacing:.06em;box-shadow:0 10px 28px rgba(236,72,153,.28),0 0 0 1px rgba(255,255,255,.18) inset;pointer-events:none;text-shadow:0 1px 6px rgba(0,0,0,.45);font-variant-numeric:tabular-nums}
 #camera-canvas{display:none;width:100%;height:100%}
-#camera-img{max-width:100%;max-height:100%;object-fit:contain}
+#camera-img{width:100%;height:100%;object-fit:contain}
 #sec-camera>summary{background:rgba(236,72,153,.45);border-left:5px solid #ec4899;color:#fce7f3}

@@ -167,6 +167,10 @@ document.addEventListener('keydown',function(e){
     if(e.key===' '){ddsPauseToggle();e.preventDefault();}
     return;
   }
+  if(_smActive){
+    if(e.key===' '){streamingPauseToggle();e.preventDefault();}
+    return;
+  }
   if(e.key==='ArrowLeft'){playStep(-1);e.preventDefault();}
   else if(e.key==='ArrowRight'){playStep(1);e.preventDefault();}
   else if(e.key===' '){playToggle();e.preventDefault();}
@@ -437,6 +441,167 @@ function ddsStop(){
   setStatus('DDS stopped','ok');
 }
 // end DDS live
+// ── Streaming Live mode ──────────────────────────────────────────────────────────────────────────
+let _smActive=false,_smLastId=-1,_smStatusPoll=null,_smPaused=false;
+let _smPending=null;
+let _smRenderFpsCap=10,_smRenderMinInterval=1000/10,_smLastRenderAt=0;
+let _smCurrentMaxPoints=60000;
+let _smFpsCnt=0,_smFpsT0=performance.now(),_smFpsLast='';
+function _smFpsTick(){
+  _smFpsCnt++;
+  const now=performance.now(),dt=now-_smFpsT0;
+  if(dt>=1000){_smFpsLast=(_smFpsCnt*1000/dt).toFixed(1)+' fps';_smFpsCnt=0;_smFpsT0=now;}
+}
+function _smSetMaxPoints(n,silent){
+  const v=Math.max(10000,Math.min(1000000,Math.round((parseInt(n,10)||60000)/1000)*1000));
+  _smCurrentMaxPoints=v;
+  const el=document.getElementById('streaming-max-pts');if(el&&parseInt(el.value,10)!==v)el.value=v;
+  const val=document.getElementById('streaming-max-pts-val');if(val)val.textContent=Math.round(v/1000)+'k';
+  fetch('/api/streaming_set_max_points?n='+v).catch(()=>{});
+  if(!silent)setStatus('Streaming max points: '+v.toLocaleString(),'ok');
+}
+function streamingSetMaxPointsFromUI(v){_smSetMaxPoints(v,false);}
+function streamingSetRenderFpsFromUI(v){
+  const fps=Math.max(1,Math.min(30,parseInt(v,10)||10));
+  _smRenderFpsCap=fps;
+  _smRenderMinInterval=(1000/fps)*0.95;
+  const el=document.getElementById('streaming-render-fps-val');if(el)el.textContent=String(fps);
+}
+let _smPollAbort=null;
+async function _smStartPoll(){
+  if(_smPollAbort){_smPollAbort.abort();_smPollAbort=null;}
+  try{await fetch('/api/streaming_ensure');}catch(e){}
+  const ac=new AbortController();
+  _smPollAbort=ac;
+  (async()=>{
+    while(_smActive&&!ac.signal.aborted){
+      try{
+        const r=await fetch('/api/streaming_frame?after_id='+_smLastId,{signal:ac.signal});
+        if(!_smActive||ac.signal.aborted)break;
+        if(r.status===204)continue;
+        if(!r.ok){await new Promise(res=>setTimeout(res,200));continue;}
+        const buf=await r.arrayBuffer();
+        if(buf.byteLength<20)continue;
+        const dv=new DataView(buf);
+        // verify 'PCL2' magic
+        if(dv.getUint8(0)!==80||dv.getUint8(1)!==67||dv.getUint8(2)!==76||dv.getUint8(3)!==50)continue;
+        const fid=dv.getUint32(4,true);
+        const npoints=dv.getUint32(8,true);
+        const floats=new Float32Array(buf,20,npoints*4);
+        _smLastId=fid;
+        _smPending={floats,nfields:4,fields:['x','y','z','intensity'],fid,npoints};
+      }catch(e){
+        if(!_smActive||ac.signal.aborted||e.name==='AbortError')break;
+        await new Promise(res=>setTimeout(res,300));
+      }
+    }
+  })();
+}
+function _smStopPoll(){
+  if(_smPollAbort){_smPollAbort.abort();_smPollAbort=null;}
+}
+async function streamingRefreshReceiverConfig(){
+  try{
+    const rc=await fetch('/api/streaming_receiver_config');
+    const r=await rc.json();
+    const ip=document.getElementById('streaming-bind-ip');if(ip&&r.host)ip.value=r.host;
+    const pt=document.getElementById('streaming-bind-port');if(pt&&r.port)pt.value=r.port;
+    const ip2=document.getElementById('streaming-info-port');if(ip2&&r.info_port)ip2.value=r.info_port;
+    const st=document.getElementById('streaming-bind-status');
+    if(st)st.textContent='bind: '+(r.host||'?')+':'+(r.port||'?')+' | info: '+(r.info_port||'?')+(r.src_host?' | src: '+r.src_host:'');
+  }catch(e){
+    const st=document.getElementById('streaming-bind-status');if(st)st.textContent='bind: read failed';
+  }
+}
+async function streamingApplyReceiverConfig(){
+  const ip=(document.getElementById('streaming-bind-ip')?.value||'127.0.0.1').trim()||'127.0.0.1';
+  const port=parseInt(document.getElementById('streaming-bind-port')?.value||'6699',10);
+  const infoPort=parseInt(document.getElementById('streaming-info-port')?.value||'7788',10);
+  if(!(port>=1&&port<=65535)){setStatus('Streaming receiver port invalid','err');return;}
+  if(!(infoPort>=1&&infoPort<=65535)){setStatus('Streaming info port invalid','err');return;}
+  try{
+    const r=await fetch('/api/streaming_rebind?ip='+encodeURIComponent(ip)+'&port='+port+'&info_port='+infoPort);
+    const d=await r.json();
+    if(!d.ok){setStatus('Streaming rebind failed: '+(d.error||'unknown'),'err');return;}
+    const st=document.getElementById('streaming-bind-status');
+    if(st)st.textContent='bind: '+d.host+':'+d.port+' | info: '+(d.info_port||infoPort);
+    setStatus('Streaming receiver bound to '+d.host+':'+d.port+' info:'+infoPort,'ok');
+    streamingRefreshReceiverConfig();
+  }catch(e){setStatus('Streaming rebind error','err');}
+}
+function _smRenderTick(){
+  if(!_smActive)return;
+  if(_smPaused){requestAnimationFrame(_smRenderTick);return;}
+  const now=performance.now();
+  if(now-_smLastRenderAt<_smRenderMinInterval){requestAnimationFrame(_smRenderTick);return;}
+  if(_smPending){
+    const{floats,nfields,fields,fid,npoints}=_smPending;
+    _smPending=null;
+    const r0=performance.now();
+    window._three.loadPoints(floats,nfields,fields);
+    if(npoints>0&&now-600>0)_applyZRange(floats,nfields,fields);
+    _smLastRenderAt=now;
+    _smFpsTick();
+    const fpsStr=_smFpsLast?' \u00b7 '+_smFpsLast:'';
+    document.getElementById('streaming-status').textContent='frame '+fid+' \u00b7 '+npoints.toLocaleString()+' pts'+fpsStr;
+    document.getElementById('streaming-status').style.color='#a78bfa';
+    document.getElementById('info').textContent=npoints.toLocaleString()+' pts  \u00b7  Streaming #'+fid;
+  }
+  requestAnimationFrame(_smRenderTick);
+}
+function _smLockFileUi(on){
+  ['sec-file','sec-play'].forEach(id=>{
+    const el=document.getElementById(id);if(!el)return;
+    el.classList.toggle('dds-locked',!!on);
+    if(on)el.removeAttribute('open');
+  });
+}
+async function streamingToggle(){
+  if(_smActive){streamingStop();return;}
+  _smActive=true;_smLastId=-1;_smPending=null;_smFpsCnt=0;_smFpsT0=performance.now();_smFpsLast='';
+  _smLastRenderAt=0;
+  _stopPlay();
+  _smLockFileUi(true);
+  const _ovl=document.getElementById('overlay');if(_ovl)_ovl.style.display='none';
+  document.getElementById('btn-streaming').innerHTML='&#x23F9; Streaming Stop';
+  document.getElementById('btn-streaming').style.background='#7c3aed';
+  document.getElementById('streaming-status').textContent='connecting\u2026';
+  document.getElementById('streaming-status').style.color='#facc15';
+  streamingSetRenderFpsFromUI(document.getElementById('streaming-render-fps')?.value||'10');
+  _smSetMaxPoints(document.getElementById('streaming-max-pts')?.value||_smCurrentMaxPoints,true);
+  setStatus('Streaming: waiting for frames\u2026','loading');
+  requestAnimationFrame(_smRenderTick);
+  _smStartPoll();
+  if(_smStatusPoll)clearInterval(_smStatusPoll);
+  _smStatusPoll=setInterval(()=>{if(_smActive)streamingRefreshReceiverConfig();},1000);
+  _smPaused=false;
+  const pb=document.getElementById('btn-streaming-pause');
+  if(pb){pb.style.display='';pb.innerHTML='&#x23F8; Pause';pb.style.background='';}
+}
+function streamingPauseToggle(){
+  if(!_smActive)return;
+  _smPaused=!_smPaused;
+  const pb=document.getElementById('btn-streaming-pause');
+  if(pb){pb.innerHTML=_smPaused?'&#x25B6; Resume':'&#x23F8; Pause';pb.style.background=_smPaused?'#f59e0b':'';}
+  const st=document.getElementById('streaming-status');
+  if(st&&_smPaused){st.textContent='paused';st.style.color='#f59e0b';}
+}
+function streamingStop(){
+  _smActive=false;
+  _smPaused=false;
+  _smPending=null;
+  _smStopPoll();
+  if(_smStatusPoll){clearInterval(_smStatusPoll);_smStatusPoll=null;}
+  const pb=document.getElementById('btn-streaming-pause');if(pb){pb.style.display='none';pb.style.background='';}
+  _smLockFileUi(false);
+  if(window._three&&window._three.exitLiveMode)window._three.exitLiveMode();
+  document.getElementById('btn-streaming').innerHTML='&#x1F4E1; Streaming Live';
+  document.getElementById('btn-streaming').style.background='';
+  document.getElementById('streaming-status').textContent='off';
+  document.getElementById('streaming-status').style.color='#475569';
+  setStatus('Streaming stopped','ok');
+}
+// end Streaming live
 function setStatus(m,c){
   const e=document.getElementById('status');e.textContent=m;e.className=c||'';
   // 鍚屾椂鎶婄姸鎬佹秷鎭墦鍒?log 闈㈡澘锛堝幓鎺夌┖娑堟伅鍜?loading"鍗犱綅閬垮厤鍒峰睆锛?
@@ -446,7 +611,7 @@ function setStatus(m,c){
     if(c!=='loading' || (m.length>4 && !/\.\.\.|\u2026/.test(m))) _logUI('status', m, lv);
   }
 }
-function onFileSelect(path){if(_ddsActive)return;_stopPlay();if(path)loadFile(path);}
+function onFileSelect(path){if(_ddsActive||_smActive)return;_stopPlay();if(path)loadFile(path);}
 async function refreshList(){const r=await fetch('/api/files');const d=await r.json();const sel=document.getElementById('file-select');sel.innerHTML='<option value="">&#8212; select file &#8212;</option>';d.files.forEach(f=>{const o=document.createElement('option');o.value=f;o.textContent=f;sel.appendChild(o);});_playFiles=d.files||[];_playTotal=_playFiles.length;const ts=document.getElementById('play-total');if(ts)ts.textContent=_playTotal;const sk=document.getElementById('play-seek');if(sk){sk.max=Math.max(0,_playTotal-1);sk.value=_playCur;}}
 function _applyZRange(floats,nfields,fields){const zi=fields.indexOf('z');if(zi<0)return;const np=(floats.length/nfields)|0;let mn=Infinity,mx=-Infinity;for(let i=0;i<np;i++){const z=floats[i*nfields+zi];if(z<mn)mn=z;if(z>mx)mx=z;}const step=Math.max(0.01,parseFloat(((mx-mn)/200).toFixed(2)));['flt-zmin','flt-zmax'].forEach((id,ii)=>{const el=document.getElementById(id);if(el){el.min=mn.toFixed(2);el.max=mx.toFixed(2);el.step=step;el.value=ii===0?mn.toFixed(2):mx.toFixed(2);}});}
 async function loadFile(path){
@@ -642,7 +807,7 @@ refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();
 // 鈹€鈹€ Camera mode (GVSP UDP receiver) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 const _CAM_PCD_SECTIONS=['sec-file','sec-view','sec-play','sec-dds','sec-traj','sec-edit'];
 let _camMode=false,_camActive=false,_camLastId=-1;
-let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0;
+let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0,_camLastBuf=null;
 let _camShowFps=true;
 function _camGetCanvasCtx(){
   const cv=document.getElementById('camera-canvas');if(!cv)return null;
@@ -657,7 +822,7 @@ function camToggleFps(on){
   badge.textContent=_camFps.toFixed(1)+' FPS';
 }
 function _camResetRender(){
-  _camRenderBusy=false;_camPendingFrame=null;_camFpsTs=0;_camFpsFrames=0;_camFps=0;
+  _camRenderBusy=false;_camPendingFrame=null;_camLastBuf=null;_camFpsTs=0;_camFpsFrames=0;_camFps=0;
   const img=document.getElementById('camera-img');
   if(img){img.onload=null;img.onerror=null;img.src='';img.style.display='none';}
   if(_camCurrentBlobUrl){URL.revokeObjectURL(_camCurrentBlobUrl);_camCurrentBlobUrl=null;}
@@ -720,6 +885,7 @@ function _camRenderFallback(fid,buf){
   });
 }
 async function _camRenderFrame(fid,buf){
+  _camLastBuf=buf;
   if(typeof createImageBitmap==='function'){
     try{
       const bitmap=await createImageBitmap(new Blob([buf],{type:'image/jpeg'}));
@@ -837,6 +1003,14 @@ async function _camPollLoop(){
   _camAbortCtrl=null;
 }
 // end Camera mode
+(function(){
+  const wrap=document.getElementById('camera-wrap');
+  if(!wrap||typeof ResizeObserver==='undefined')return;
+  new ResizeObserver(()=>{
+    if(!_camMode||!_camLastBuf)return;
+    _camQueueFrame(_camLastId,_camLastBuf);
+  }).observe(wrap);
+})();
 
 // 鈹€鈹€ Gaussian Splatting UI 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 function setGsOverlay(mode, line1, line2){
