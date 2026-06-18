@@ -556,12 +556,18 @@ function _smLockFileUi(on){
     if(on)el.removeAttribute('open');
   });
 }
+let _smPrevColorMode=null;
 async function streamingToggle(){
   if(_smActive){streamingStop();return;}
   _smActive=true;_smLastId=-1;_smPending=null;_smFpsCnt=0;_smFpsT0=performance.now();_smFpsLast='';
   _smLastRenderAt=0;
   _stopPlay();
   _smLockFileUi(true);
+  // Switch to intensity color mode, remembering the previous mode for restore on stop.
+  const cmSel=document.getElementById('color-mode');
+  _smPrevColorMode=cmSel?cmSel.value:'height';
+  if(cmSel)cmSel.value='intensity';
+  if(window._three&&window._three.setColorMode)window._three.setColorMode('intensity');
   const _ovl=document.getElementById('overlay');if(_ovl)_ovl.style.display='none';
   document.getElementById('btn-streaming').innerHTML='&#x23F9; Streaming Stop';
   document.getElementById('btn-streaming').style.background='#7c3aed';
@@ -595,6 +601,13 @@ function streamingStop(){
   const pb=document.getElementById('btn-streaming-pause');if(pb){pb.style.display='none';pb.style.background='';}
   _smLockFileUi(false);
   if(window._three&&window._three.exitLiveMode)window._three.exitLiveMode();
+  // Restore color mode that was active before streaming started.
+  if(_smPrevColorMode){
+    const cmSel=document.getElementById('color-mode');
+    if(cmSel)cmSel.value=_smPrevColorMode;
+    if(window._three&&window._three.setColorMode)window._three.setColorMode(_smPrevColorMode);
+    _smPrevColorMode=null;
+  }
   document.getElementById('btn-streaming').innerHTML='&#x1F4E1; Streaming Live';
   document.getElementById('btn-streaming').style.background='';
   document.getElementById('streaming-status').textContent='off';
