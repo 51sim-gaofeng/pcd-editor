@@ -17,6 +17,14 @@ from model.dds_model import (
     rebind_udp_listener,
     set_max_live_points,
 )
+from model.streaming_model import (
+    ensure_started as streaming_ensure_started,
+    get_receiver_config as streaming_get_receiver_config,
+    get_status as streaming_get_status,
+    get_latest_frame_blocking as streaming_get_latest_frame_blocking,
+    rebind_udp_listener as streaming_rebind_udp,
+    set_max_live_points as streaming_set_max_points,
+)
 from model.file_model import _preload_all, list_pcd_files
 from model.gaussian_model import list_gaussian_files
 from model.pcd_model import get_pcd_binary_cached, parse_pcd, save_pcd
@@ -213,6 +221,43 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 n = int(params.get('n', ['60000'])[0])
                 set_max_live_points(n)
+                self._json({'ok': True, 'max_points': n})
+            except (ValueError, IndexError):
+                self._json({'ok': False})
+
+        elif path == '/api/streaming_ensure':
+            try:
+                from config import config as _cfg
+                self._json(streaming_ensure_started(
+                    _cfg.streaming_udp_port, _cfg.streaming_udp_host,
+                    _cfg.streaming_info_port))
+            except Exception as e:
+                self._json({'started': False, 'error': str(e)})
+
+        elif path == '/api/streaming_status':
+            self._json(streaming_get_status())
+
+        elif path == '/api/streaming_receiver_config':
+            self._json(streaming_get_receiver_config())
+
+        elif path == '/api/streaming_frame':
+            self._handle_streaming_frame(params)
+
+        elif path == '/api/streaming_rebind':
+            try:
+                host      = params.get('ip',        ['127.0.0.1'])[0] or '127.0.0.1'
+                port      = int(params.get('port',      ['6699'])[0])
+                info_port = int(params.get('info_port', ['7788'])[0])
+                self._json({'ok': True, **streaming_rebind_udp(host, port, info_port)})
+            except (ValueError, IndexError):
+                self._json({'ok': False, 'error': 'invalid ip or port'})
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
+
+        elif path == '/api/streaming_set_max_points':
+            try:
+                n = int(params.get('n', ['60000'])[0])
+                streaming_set_max_points(n)
                 self._json({'ok': True, 'max_points': n})
             except (ValueError, IndexError):
                 self._json({'ok': False})
@@ -601,6 +646,31 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('X-Frame-Id', str(fid))
             self.send_header('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate')
             self.send_header('Pragma', 'no-cache')
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _handle_streaming_frame(self, params):
+        """Long-poll: block until a streaming frame newer than after_id arrives (up to 1 s)."""
+        try:
+            after_id = int(params.get('after_id', ['-1'])[0])
+        except (ValueError, IndexError):
+            after_id = -1
+        fid, payload = streaming_get_latest_frame_blocking(after_id, timeout=1.0)
+        if payload is None:
+            try:
+                self.send_response(204)
+                self.end_headers()
+            except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+                pass
+            return
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('X-Frame-Id', str(fid))
+            self.send_header('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate')
             self.send_header('Content-Length', str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)

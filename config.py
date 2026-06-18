@@ -47,6 +47,9 @@ class _Config:
         self.udp_host: str = '255.255.255.255'
         self.udp_port: int = 9870
         self.dds_ws_port: int = 9090
+        self.streaming_udp_host: str = '127.0.0.1'
+        self.streaming_udp_port: int = 6699
+        self.streaming_info_port: int = 7788
 
     @property
     def traj_dir(self) -> str:
@@ -72,6 +75,12 @@ def init_from_args(argv):
                     help='UDP bind address for DDS receiver (default: 127.0.0.1)')
     ap.add_argument('--dds-ws-port', type=int, default=None, dest='dds_ws_port',
                     help='WebSocket port for DDS live stream (default: HTTP port + 1)')
+    ap.add_argument('--streaming-udp-port', type=int, default=6699, dest='streaming_udp_port',
+                    help='UDP port for SimOne Streaming MSOP point cloud (default: 6699)')
+    ap.add_argument('--streaming-udp-ip', type=str, default='127.0.0.1', dest='streaming_udp_host',
+                    help='UDP bind address for SimOne Streaming receiver (default: 127.0.0.1)')
+    ap.add_argument('--streaming-info-port', type=int, default=7788, dest='streaming_info_port',
+                    help='UDP port for SimOne Streaming DIFOP calibration (default: 7788)')
     ap.add_argument('positional', nargs='*', help='[DIR] [PORT] (legacy positional form)')
     a = ap.parse_args(argv)
 
@@ -100,3 +109,6 @@ def init_from_args(argv):
     config.udp_host = a.udp_host
     config.udp_port = a.udp_port
     config.dds_ws_port = a.dds_ws_port if a.dds_ws_port is not None else (a.port + 1)
+    config.streaming_udp_host = a.streaming_udp_host
+    config.streaming_udp_port = a.streaming_udp_port
+    config.streaming_info_port = a.streaming_info_port

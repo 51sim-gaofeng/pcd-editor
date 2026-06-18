@@ -170,6 +170,49 @@
       </div>
     </div>
   </details>
+  <details id="sec-streaming">
+    <summary>&#128225; Streaming</summary>
+    <div class="sec">
+      <div class="row" style="justify-content:center">
+        <button class="btn" id="btn-streaming" onclick="streamingToggle()" title="Receive SimOne Streaming point cloud via UDP">&#x1F4E1; Streaming Live</button>
+        <button class="btn ghost" id="btn-streaming-pause" onclick="streamingPauseToggle()" title="暂停渲染（仍接收数据）" style="display:none">&#x23F8; Pause</button>
+        <span id="streaming-status" style="font-size:.65rem;color:#475569;margin-left:6px">off</span>
+      </div>
+      <div style="display:grid;grid-template-columns:auto 1fr auto 1fr;gap:5px;align-items:center;margin-top:6px">
+        <span style="font-size:.7rem;color:#64748b">IP</span>
+        <input type="text" id="streaming-bind-ip" value="127.0.0.1" placeholder="127.0.0.1" style="min-width:0;width:100%">
+        <span style="font-size:.7rem;color:#64748b">Port</span>
+        <input type="number" id="streaming-bind-port" min="1" max="65535" step="1" value="6699" style="min-width:0;width:100%">
+      </div>
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:5px;align-items:center;margin-top:3px">
+        <span style="font-size:.7rem;color:#64748b">Info Port</span>
+        <input type="number" id="streaming-info-port" min="1" max="65535" step="1" value="7788" placeholder="7788 (DIFOP)" style="min-width:0;width:100%">
+      </div>
+      <div class="grid2" style="margin-top:4px">
+        <button class="btn ghost" onclick="streamingApplyReceiverConfig()">Apply Receiver</button>
+        <button class="btn ghost" onclick="streamingRefreshReceiverConfig()">Refresh</button>
+      </div>
+      <div id="streaming-bind-status" style="font-size:.62rem;color:#64748b;text-align:center;margin-top:4px">bind: 127.0.0.1:6699 | info: 7788</div>
+      <hr style="border-color:#334155;margin:6px 0">
+      <div class="row" style="justify-content:center;margin-top:4px;gap:6px;align-items:center">
+        <span style="font-size:.65rem;color:#64748b;white-space:nowrap">Max pts</span>
+        <input type="range" id="streaming-max-pts" min="10000" max="1000000" step="10000" value="60000"
+               style="flex:1;accent-color:#a78bfa"
+               oninput="streamingSetMaxPointsFromUI(this.value)">
+        <span id="streaming-max-pts-val" style="font-size:.65rem;color:#94a3b8;min-width:30px">60k</span>
+      </div>
+      <div class="row" style="justify-content:center;margin-top:4px;gap:6px;align-items:center">
+        <span style="font-size:.65rem;color:#64748b;white-space:nowrap">Render FPS</span>
+        <input type="range" id="streaming-render-fps" min="1" max="30" step="1" value="10"
+               style="flex:1;accent-color:#c084fc"
+               oninput="streamingSetRenderFpsFromUI(this.value)">
+        <span id="streaming-render-fps-val" style="font-size:.65rem;color:#94a3b8;min-width:30px">10</span>
+      </div>
+      <div style="font-size:.6rem;color:#475569;margin-top:4px;text-align:center">
+        Protocol: MSOP (port) + DIFOP (info port) · SimOneDefault XYZI
+      </div>
+    </div>
+  </details>
   <details id="sec-traj">
     <summary>&#9998; Trajectory</summary>
     <div class="sec">
