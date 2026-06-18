@@ -7,20 +7,20 @@ Web-based 3D point cloud visualizer powered by Python (HTTP server) + Three.js (
 ## Quick Start
 
 ```bash
-# Default: opens current directory, port 8089
+# Default: opens current directory, port 9089
 python pcd_viewer.py
 
 # Specify data directory and port
-python pcd_viewer.py --dir /path/to/pcd/files --port 8089 --ip 0.0.0.0
+python pcd_viewer.py --dir /path/to/pcd/files --port 9089 --ip 0.0.0.0
 
 # Customize DDS receiver (default: broadcast 255.255.255.255:9870)
 python pcd_viewer.py --udp-ip 239.255.0.1 --udp-port 9870 --dds-ws-port 9090
 
 # Legacy positional form (backward compatible)
-python pcd_viewer.py /path/to/pcd/files 8089
+python pcd_viewer.py /path/to/pcd/files 9089
 ```
 
-Open **http://localhost:8089** in your browser, or just launch the binary on Windows (a native pywebview window opens automatically).
+Open **http://localhost:9089** in your browser, or just launch the binary on Windows (a native pywebview window opens automatically).
 
 ---
 
@@ -86,7 +86,7 @@ Open **http://localhost:8089** in your browser, or just launch the binary on Win
 | Flag             | Default            | Description                                       |
 |------------------|--------------------|---------------------------------------------------|
 | `--ip`           | `127.0.0.1`        | HTTP bind address                                 |
-| `--port`         | `8089`             | HTTP listen port                                  |
+| `--port`         | `9089`             | HTTP listen port                                  |
 | `--dir`          | last used / cwd    | Data directory containing `.pcd` files            |
 | `--no-window`    | off                | Headless HTTP server (no pywebview window)        |
 | `--udp-ip`       | `255.255.255.255`  | DDS UDP source — single host, broadcast, or multicast |
@@ -133,7 +133,7 @@ A singleton `_Config` object shared across all modules. Updated at runtime when 
 | Attribute        | Default              | Description                       |
 |------------------|----------------------|-----------------------------------|
 | `data_dir`       | script dir           | Root directory for PCD files      |
-| `port`           | `8089`               | HTTP listen port                  |
+| `port`           | `9089`               | HTTP listen port                  |
 | `host`           | `127.0.0.1`          | HTTP bind address                 |
 | `udp_host`       | `255.255.255.255`    | DDS UDP source IP                 |
 | `udp_port`       | `9870`               | DDS UDP port                      |

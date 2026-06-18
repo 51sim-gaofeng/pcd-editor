@@ -37,7 +37,7 @@ _cam_frame_id: int = -1
 _cam_recv_count: int = 0
 _cam_last_ts: float = 0.0
 _cam_bind_host: str = '127.0.0.1'
-_cam_bind_port: int = 9870
+_cam_bind_port: int = 13956
 _cam_running: bool = False
 
 _listener_thread = None

@@ -13,6 +13,8 @@ Decoded frames are stored in module-level state and served to the frontend via t
 HTTP long-poll endpoint /api/streaming_frame (binary PCL2 format, identical to the
 format dds_model pushes over WebSocket).
 """
+from __future__ import annotations
+
 import socket
 import struct
 import threading

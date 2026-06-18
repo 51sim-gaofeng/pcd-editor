@@ -41,7 +41,7 @@ class _Config:
 
     def __init__(self):
         self.data_dir: str = ''
-        self.port: int = 8089
+        self.port: int = 9089
         self.host: str = '127.0.0.1'
         self.no_window: bool = False
         self.udp_host: str = '255.255.255.255'
@@ -65,7 +65,7 @@ def init_from_args(argv):
         description='4DGS Lidar PCD Viewer (Three.js web UI)',
     )
     ap.add_argument('--ip',   default='127.0.0.1', help='HTTP bind address (default: 127.0.0.1)')
-    ap.add_argument('--port', type=int, default=8089, help='HTTP port (default: 8089)')
+    ap.add_argument('--port', type=int, default=9089, help='HTTP port (default: 9089)')
     ap.add_argument('--dir',       default=None,  help='Data directory containing .pcd files')
     ap.add_argument('--no-window', action='store_true', dest='no_window',
                     help='Disable pywebview; run as headless HTTP server only')

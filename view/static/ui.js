@@ -230,7 +230,13 @@ async function _ddsStartWorker(){
     return;
   }
   const wsProto=location.protocol==='https:'?'wss':'ws';
-  const wsUrl=wsProto+'://'+location.hostname+':'+(wsCfg.port||9090);
+  // Build WS URL from backend-reported bind host first; fall back to page host.
+  // Browsers cannot connect to 0.0.0.0 / ::, so remap those to a concrete host.
+  let wsHost=((wsCfg&&wsCfg.host)||'').toString().trim();
+  if(!wsHost||wsHost==='0.0.0.0'||wsHost==='::'||wsHost==='[::]'){
+    wsHost=(location.hostname&&location.hostname!=='0.0.0.0')?location.hostname:'127.0.0.1';
+  }
+  const wsUrl=wsProto+'://'+wsHost+':'+(wsCfg.port||9090);
   _ddsWorker=new Worker('/static/dds_fetch_worker.js');
   _ddsWorker.onmessage=(event)=>{
     const data=event.data||{};
@@ -255,7 +261,9 @@ async function _ddsStartWorker(){
     }
     if(data.type==='ws-close'){
       _ddsWorkerCloseCount++;
-      _logUI('dds-ws', 'closed; reconnecting', 'warn');
+      const code=(typeof data.code==='number')?(' code='+data.code):'';
+      const reason=(data.reason&&data.reason.length)?(' '+data.reason):'';
+      _logUI('dds-ws', 'closed; reconnecting'+code+reason, 'warn');
       return;
     }
     if(data.type==='error'){
@@ -296,7 +304,7 @@ async function ddsRefreshReceiverConfig(){
 }
 async function ddsApplyReceiverConfig(){
   const ip=(document.getElementById('dds-bind-ip')?.value||'127.0.0.1').trim()||'127.0.0.1';
-  const port=parseInt(document.getElementById('dds-bind-port')?.value||'9870',10);
+  const port=parseInt(document.getElementById('dds-bind-port')?.value||'13956',10);
   if(!(port>=1&&port<=65535)){setStatus('DDS receiver port invalid','err');return;}
   try{
     const r=await fetch('/api/dds_rebind?ip='+encodeURIComponent(ip)+'&port='+port);
@@ -840,7 +848,7 @@ function _camUpdateStatus(fid,w,h){
   _camFpsFrames++;
   const elapsed=now-_camFpsTs;
   if(elapsed>=500){_camFps=_camFpsFrames*1000/elapsed;_camFpsFrames=0;_camFpsTs=now;}
-  const label='frame #'+fid+'  '+w+'脳'+h;
+  const label='frame #'+fid+'  '+w+'\u00D7'+h;
   const noSig=document.getElementById('cam-no-signal');if(noSig)noSig.style.display='none';
   const stEl=document.getElementById('cam-status');if(stEl){stEl.textContent=label;stEl.style.color='#34d399';}
   document.getElementById('cam-bind-status').textContent=label;
@@ -966,7 +974,7 @@ async function camConnect(){
     return;
   }
   const ip=(document.getElementById('cam-ip')?.value||'127.0.0.1').trim()||'127.0.0.1';
-  const port=parseInt(document.getElementById('cam-port')?.value||'9870',10);
+  const port=parseInt(document.getElementById('cam-port')?.value||'13956',10);
   if(!(port>=1&&port<=65535)){setStatus('Camera port invalid','err');return;}
   try{
     const r=await fetch('/api/camera_ensure?ip='+encodeURIComponent(ip)+'&port='+port);

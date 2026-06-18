@@ -119,6 +119,18 @@ class Handler(BaseHTTPRequestHandler):
         path   = parsed.path
         params = parse_qs(parsed.query)
 
+        
+        # Browsers request favicon.ico automatically. We don't ship one, so
+        # return an empty success-like response to avoid noisy 404 logs.
+        if path == '/favicon.ico':
+            try:
+                self.send_response(204)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+            except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+                pass
+            return
+        
         if path == '/':
             self._html(view.get_template('index.html'))
 
