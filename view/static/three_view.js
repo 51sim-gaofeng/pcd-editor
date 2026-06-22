@@ -526,7 +526,6 @@ canvas.addEventListener('dblclick',e=>{
     const hit=new THREE.Vector3();
     if(_ray.ray.intersectPlane(plane,hit)){
       window._gaussian.setModelRotationPivot(hit.x,hit.y,hit.z);
-      console.log('[GS] rotation pivot set to', hit.x.toFixed(3), hit.y.toFixed(3), hit.z.toFixed(3));
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -548,6 +547,16 @@ function showPickPopup(cx,cy,info){
 }
 function hidePickPopup(){document.getElementById('pick-popup').style.display='none';if(pickMarker){scene.remove(pickMarker);pickMarker.geometry.dispose();pickMarker=null;}}
 
+function _getActivePickCloud(){
+  // During live/streaming modes, static cloud can remain allocated but hidden.
+  // Always prefer the currently visible cloud to avoid raycasting stale geometry.
+  if(_liveCloud&&_liveCloud.visible!==false)return _liveCloud;
+  if(pointCloud&&pointCloud.visible!==false)return pointCloud;
+  if(_liveCloud)return _liveCloud;
+  if(pointCloud)return pointCloud;
+  return null;
+}
+
 canvas.addEventListener('click',e=>{
   if(_dragActive||lassoMode||eraserMode)return;
   if((pickMode||drawMode)&&wpMarkers.length){
@@ -556,7 +565,8 @@ canvas.addEventListener('click',e=>{
     if(wh.length>0){const wi=wpMarkers.indexOf(wh[0].object);if(wi>=0){showWpPopup(e.clientX,e.clientY,wi);return;}}
   }
   if(pickMode&&(pointCloud||_liveCloud)){
-    const target=pointCloud||_liveCloud;
+    const target=_getActivePickCloud();
+    if(!target){hidePickPopup();return;}
     const rect=canvas.getBoundingClientRect();const ndc=new THREE.Vector2(((e.clientX-rect.left)/rect.width)*2-1,-((e.clientY-rect.top)/rect.height)*2+1);
     // Screen-space adaptive threshold: ~6 px cursor radius mapped to world units at the
     // current camera-target distance (essential for sparse live cloud where the static

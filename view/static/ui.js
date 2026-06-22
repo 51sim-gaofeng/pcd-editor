@@ -19,7 +19,6 @@ function _tlogFrame(fetchMs,parseMs,renderMs,npts,fromCache,filename){
     +(filename?'  <span class="le-file">'+filename+'</span>':'');
   _appendLog(html);
   const lineText='['+now+'] '+(fromCache?'cached':'fetch:'+fetchMs.toFixed(0)+'ms')+' parse:'+parseMs.toFixed(0)+'ms render:'+renderMs.toFixed(0)+'ms total:'+total.toFixed(0)+'ms '+(npts/1000).toFixed(1)+'k pts'+(filename?' '+filename:'');
-  console.log('[PCD timing] '+lineText);
 }
 function clearLog(){const el=document.getElementById('log-entries');if(el)el.innerHTML='';}
 
@@ -492,7 +491,6 @@ function _smAdaptiveBudget(renderMs){
     _smSetMaxPoints(Math.max(_smAutoMinPoints,Math.floor(_smCurrentMaxPoints*0.8)),true);
     _smAdaptCooldownUntil=now+1400;
     const msg='Streaming: cpu slow ('+_smRenderMsEwma.toFixed(1)+'ms) reduce pts '+oldPts+' → '+_smCurrentMaxPoints;
-    console.warn(msg);
     setStatus(msg,'warn');
     return;
   }
@@ -501,7 +499,6 @@ function _smAdaptiveBudget(renderMs){
     _smSetMaxPoints(Math.min(_smAutoMaxPoints,Math.floor(_smCurrentMaxPoints*1.1)),true);
     _smAdaptCooldownUntil=now+2200;
     const msg='Streaming: cpu fast ('+_smRenderMsEwma.toFixed(1)+'ms) increase pts '+oldPts+' → '+_smCurrentMaxPoints;
-    console.log(msg);
     setStatus(msg,'ok');
   }
 }
@@ -608,7 +605,6 @@ function _smRenderTick(){
       document.getElementById('streaming-status').textContent=statusMsg;
       document.getElementById('streaming-status').style.color='#a78bfa';
       document.getElementById('info').textContent=npoints.toLocaleString()+' pts  ·  Streaming #'+fid+' ('+_smCurrentMaxPoints.toLocaleString()+'pts max)';
-      console.log('[Streaming] '+statusMsg);
       _smLastUiStatusAt=now;
       _smLastUiStatusTs=now;
       _smFetchedLast=_smFetchedCnt;
@@ -712,7 +708,7 @@ async function loadFile(path){
     if(npoints>0)_applyZRange(floats,nfields,fields);
     _tlogFrame(_t1-_t0,_t2-_t1,_t3-_t2,npoints,_fromCache,fname||path);
     document.getElementById('info').textContent=npoints.toLocaleString()+' pts'+(original_count!==npoints?' (↓'+original_count.toLocaleString()+')':'')+'  ·  '+(fname||path);setStatus('OK','ok');
-  }catch(e){setStatus('fetch error','err');console.error(e);}
+  }catch(e){setStatus('fetch error','err');}
 }
 function updatePointSize(v){document.getElementById('pt-size-val').textContent=parseFloat(v).toFixed(1);window._three.setPointSize(parseFloat(v));window._three.setPickThreshold(parseFloat(v)*0.05);}
 function applyColorMode(v){window._three.setColorMode(v);}function resetCamera(){window._three.resetCamera();}
@@ -751,7 +747,7 @@ async function savePcd(){
   const pts=window._three.getEditedPoints(),flds=window._three.getFields();if(!pts||!pts.length){alert('No points to save.');return;}
   const name=prompt('Save as (no extension):','edited_'+new Date().toISOString().slice(0,10));if(!name)return;
   setStatus('saving...','loading');
-  try{const r=await fetch('/api/save_pcd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:pts,fields:flds,filename:name})});const d=await r.json();if(d.ok){setStatus('Saved: '+d.file,'ok');refreshList();}else setStatus('Save error: '+d.error,'err');}catch(e){setStatus('save error','err');console.error(e);}
+  try{const r=await fetch('/api/save_pcd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:pts,fields:flds,filename:name})});const d=await r.json();if(d.ok){setStatus('Saved: '+d.file,'ok');refreshList();}else setStatus('Save error: '+d.error,'err');}catch(e){setStatus('save error','err');}
 }
 function trajUndo(){window._three.undoWaypoint();}function trajClear(){window._three.clearWaypoints();}
 async function trajExport(){
@@ -810,7 +806,7 @@ async function browseDir(dir){
       div.onclick=()=>{if(item.type==='dir')browseDir(item.path);else{_stopPlay();loadFileAbs(item.path);}};
       el.appendChild(div);
     });
-  }catch(e){setStatus('Browse error','err');console.error(e);}
+  }catch(e){setStatus('Browse error','err');}
 }
 function browseUp(){if(_browseDir)browseDir(_browseDir+'/..');}
 function browseDirInput(){const v=(document.getElementById('dir-path-input')||{}).value||'';if(v.trim())browseDir(v.trim());}
@@ -833,7 +829,7 @@ async function pickFileNative(){
       }
     }
     loadFileAbs(d.path);
-  }catch(e){setStatus('Picker error','err');console.error(e);}
+  }catch(e){setStatus('Picker error','err');}
 }
 async function pickDirNative(){
   setStatus('opening picker\u2026','loading');
@@ -859,7 +855,7 @@ async function pickDirNative(){
       browseDir(_browseDir);
       const el=document.getElementById('dir-modal-overlay');if(el)el.classList.add('open');
     }
-  }catch(e){setStatus('Picker error','err');console.error(e);}
+  }catch(e){setStatus('Picker error','err');}
 }
 async function openInExplorer(){
   if(!_browseDir){setStatus('no directory','err');return;}
@@ -867,7 +863,7 @@ async function openInExplorer(){
     const r=await fetch('/api/open_in_explorer?dir='+encodeURIComponent(_browseDir));
     const d=await r.json();
     if(!d.ok)setStatus('Explorer: '+(d.error||'fail'),'err');
-  }catch(e){setStatus('Explorer error','err');console.error(e);}
+  }catch(e){setStatus('Explorer error','err');}
 }
 function openDirModal(){const el=document.getElementById('dir-modal-overlay');if(!el)return;el.classList.add('open');if(!_browseDir)browseDir('');}
 function closeDirModal(){const el=document.getElementById('dir-modal-overlay');if(el)el.classList.remove('open');}
@@ -885,7 +881,7 @@ async function loadFileAbs(absPath){
     if(npoints>0)_applyZRange(floats,nfields,fields);
     _tlogFrame(_t1-_t0,_t2-_t1,_t3-_t2,npoints,_fromCache,fname||absPath.split(/[\\/]/).pop());
     document.getElementById('info').textContent=npoints.toLocaleString()+' pts'+(original_count!==npoints?' (\u2193'+original_count.toLocaleString()+')':'')+'  \u00b7  '+(fname||absPath.split(/[\\/]/).pop());setStatus('OK','ok');
-  }catch(e){setStatus('fetch error','err');console.error(e);}
+  }catch(e){setStatus('fetch error','err');}
 }
 refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();
 // 鈹€鈹€ Camera mode (GVSP UDP receiver) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -1272,7 +1268,7 @@ setInterval(_refreshGsInfo,300);
       try{
         const entries=items.map(it=>it.webkitGetAsEntry()).filter(Boolean);
         for(const ent of entries){ await _walkEntry(ent, '', collected); }
-      }catch(err){console.error('walk error',err);}
+      }catch(err){}
     }
     if(!collected.length){
       // fallback: plain files only
@@ -1302,7 +1298,7 @@ setInterval(_refreshGsInfo,300);
           else{if(!firstPcd)firstPcd=d.file;}
         }
         else setStatus('upload error: '+(d.error||'?'),'err');
-      }catch(err){console.error(err);setStatus('upload failed','err');}
+      }catch(err){setStatus('upload failed','err');}
     }
     if(!firstPcd&&!firstPly)return;
     _frameCache.clear(); _fetchPromises.clear();

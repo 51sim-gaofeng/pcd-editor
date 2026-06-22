@@ -170,7 +170,6 @@ def _parse_difop(data: bytes) -> None:
         _sm_vert_lut = vert_lut
         _sm_channels = n_ch
         _sm_last_difop_blob = cali_blob
-    print(f'[Streaming] DIFOP calibration updated: {n_ch} channels', flush=True)
 
 
 # ── MSOP packet decoder ───────────────────────────────────────────────────────
@@ -334,13 +333,11 @@ def _difop_listener_thread(host: str, port: int, stop_evt: threading.Event) -> N
     try:
         sock.bind((bind_addr, port))
     except Exception as e:
-        print(f'[Streaming] DIFOP socket bind failed on {bind_addr}:{port}: {e}', flush=True)
         return
 
     sock.settimeout(0.5)
     with _sm_lock:
         _difop_sock = sock
-    print(f'[Streaming] DIFOP listener on {bind_addr}:{port}', flush=True)
 
     while not stop_evt.is_set():
         try:
@@ -404,7 +401,6 @@ def _udp_listener_thread(host: str, port: int, stop_evt: threading.Event) -> Non
     try:
         sock.bind((bind_addr, port))
     except Exception as e:
-        print(f'[Streaming] MSOP bind failed on {bind_addr}:{port}: {e}', flush=True)
         with _sm_lock:
             _sm_running = False
         return
@@ -413,8 +409,8 @@ def _udp_listener_thread(host: str, port: int, stop_evt: threading.Event) -> Non
         try:
             mreq = struct.pack('=4sl', socket.inet_aton(host), socket.INADDR_ANY)
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-        except Exception as e:
-            print(f'[Streaming] multicast join failed: {e}', flush=True)
+        except Exception:
+            pass
 
     sock.settimeout(0.5)
     with _sm_lock:
@@ -422,8 +418,6 @@ def _udp_listener_thread(host: str, port: int, stop_evt: threading.Event) -> Non
         _sm_running    = True
         _sm_bind_host  = host
         _sm_bind_port  = port
-    mode = 'multicast' if is_mcast else ('broadcast' if is_bcast else 'unicast')
-    print(f'[Streaming] MSOP listener on {bind_addr}:{port} ({mode}={host})', flush=True)
 
     with _sm_lock:
         decode_queue = _decode_queue
@@ -456,14 +450,6 @@ def _udp_listener_thread(host: str, port: int, stop_evt: threading.Event) -> Non
         end_hz = stat_msop_end_flags / dt if dt > 0 else 0.0
         avg_scan_pkts = (stat_scan_packet_total / stat_msop_end_flags) if stat_msop_end_flags > 0 else 0.0
         queue_depth = decode_queue.qsize() if decode_queue is not None else 0
-        print(
-            '[Streaming] statistics: '
-            f'{fps:.1f} fps, msop:{pps:.0f} pkt/s, end:{end_hz:.1f}/s, '
-            f'avg_scan:{avg_scan_pkts:.1f} pkt, enq:{stat_enqueued_frames}, '
-            f'qdrop:{stat_queue_drops}, qdepth:{queue_depth}, '
-            f'pkt_gaps:{stat_pkt_id_gaps}, missing:{stat_missing_packets}, buffered:{len(scan_packets)}',
-            flush=True,
-        )
         last_stat_t = now
         last_stat_frame = frame_counter
         stat_msop_packets = 0
@@ -577,14 +563,11 @@ def _decode_worker_thread(stop_evt: threading.Event) -> None:
         try:
             t_dec0 = time.perf_counter()
             points, _ = _decode_packets_default(list(scan_packets))
-            t_dec_ms = (time.perf_counter() - t_dec0) * 1000.0
+            _ = (time.perf_counter() - t_dec0) * 1000.0
             if len(points) > 0:
                 _store_frame(points, frame_id)
-                print(f'[Streaming] frame {frame_id} decoded: {len(points)} pts in {t_dec_ms:.1f}ms', flush=True)
-            else:
-                print(f'[Streaming] frame {frame_id} decoded: 0 pts in {t_dec_ms:.1f}ms', flush=True)
-        except Exception as e:
-            print(f'[Streaming] decode error: {e}', flush=True)
+        except Exception:
+            pass
         finally:
             decode_queue.task_done()
 
