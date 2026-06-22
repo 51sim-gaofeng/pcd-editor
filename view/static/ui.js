@@ -455,6 +455,12 @@ let _smPending=null;
 let _smRenderFpsCap=10,_smRenderMinInterval=1000/10,_smLastRenderAt=0;
 let _smCurrentMaxPoints=60000;
 let _smFpsCnt=0,_smFpsT0=performance.now(),_smFpsLast='';
+let _smRenderMsEwma=0,_smAdaptCooldownUntil=0,_smLastZRangeAt=0,_smLastUiStatusAt=0,_smLastUiStatusTs=0;
+let _smAutoMinPoints=10000,_smAutoMaxPoints=1000000,_smAdaptive=true;
+// Streaming performance metrics
+let _smFetchedCnt=0,_smFetchedLast=0,_smFetchHz='0.0';
+let _smRenderedCnt=0,_smRenderedLast=0,_smRenderHz='0.0';
+let _smLastPollMs=0,_smLastParseMs=0,_smLastRenderMs=0;
 function _smFpsTick(){
   _smFpsCnt++;
   const now=performance.now(),dt=now-_smFpsT0;
@@ -475,6 +481,30 @@ function streamingSetRenderFpsFromUI(v){
   _smRenderMinInterval=(1000/fps)*0.95;
   const el=document.getElementById('streaming-render-fps-val');if(el)el.textContent=String(fps);
 }
+function _smRoundPts(v){return Math.max(_smAutoMinPoints,Math.min(_smAutoMaxPoints,Math.round(v/1000)*1000));}
+function _smAdaptiveBudget(renderMs){
+  _smLastRenderMs=renderMs;
+  _smRenderMsEwma=_smRenderMsEwma>0?(_smRenderMsEwma*0.85+renderMs*0.15):renderMs;
+  const now=performance.now();
+  if(!_smAdaptive||now<_smAdaptCooldownUntil)return;
+  if(_smRenderMsEwma>40&&_smCurrentMaxPoints>_smAutoMinPoints){
+    const oldPts=_smCurrentMaxPoints;
+    _smSetMaxPoints(Math.max(_smAutoMinPoints,Math.floor(_smCurrentMaxPoints*0.8)),true);
+    _smAdaptCooldownUntil=now+1400;
+    const msg='Streaming: cpu slow ('+_smRenderMsEwma.toFixed(1)+'ms) reduce pts '+oldPts+' → '+_smCurrentMaxPoints;
+    console.warn(msg);
+    setStatus(msg,'warn');
+    return;
+  }
+  if(_smRenderMsEwma<18&&_smCurrentMaxPoints<_smAutoMaxPoints){
+    const oldPts=_smCurrentMaxPoints;
+    _smSetMaxPoints(Math.min(_smAutoMaxPoints,Math.floor(_smCurrentMaxPoints*1.1)),true);
+    _smAdaptCooldownUntil=now+2200;
+    const msg='Streaming: cpu fast ('+_smRenderMsEwma.toFixed(1)+'ms) increase pts '+oldPts+' → '+_smCurrentMaxPoints;
+    console.log(msg);
+    setStatus(msg,'ok');
+  }
+}
 let _smPollAbort=null;
 async function _smStartPoll(){
   if(_smPollAbort){_smPollAbort.abort();_smPollAbort=null;}
@@ -484,10 +514,17 @@ async function _smStartPoll(){
   (async()=>{
     while(_smActive&&!ac.signal.aborted){
       try{
+        const pollStart=performance.now();
         const r=await fetch('/api/streaming_frame?after_id='+_smLastId,{signal:ac.signal});
+        _smLastPollMs=performance.now()-pollStart;
         if(!_smActive||ac.signal.aborted)break;
-        if(r.status===204)continue;
+        if(r.status===204){
+          // No new data: sleep briefly to avoid aggressive polling
+          await new Promise(res=>setTimeout(res,50));
+          continue;
+        }
         if(!r.ok){await new Promise(res=>setTimeout(res,200));continue;}
+        const parseStart=performance.now();
         const buf=await r.arrayBuffer();
         if(buf.byteLength<20)continue;
         const dv=new DataView(buf);
@@ -496,7 +533,9 @@ async function _smStartPoll(){
         const fid=dv.getUint32(4,true);
         const npoints=dv.getUint32(8,true);
         const floats=new Float32Array(buf,20,npoints*4);
+        _smLastParseMs=performance.now()-parseStart;
         _smLastId=fid;
+        _smFetchedCnt++;
         _smPending={floats,nfields:4,fields:['x','y','z','intensity'],fid,npoints};
       }catch(e){
         if(!_smActive||ac.signal.aborted||e.name==='AbortError')break;
@@ -548,13 +587,33 @@ function _smRenderTick(){
     const r0=performance.now();
     if(window._three&&window._three.updateLive)window._three.updateLive(floats,nfields,fields);
     else window._three.loadPoints(floats,nfields,fields);
-    if(npoints>0&&now-600>0)_applyZRange(floats,nfields,fields);
+    // Z range UI update at low frequency to avoid per-frame overhead (same as DDS pattern)
+    if(npoints>0&&now-_smLastZRangeAt>=800){_applyZRange(floats,nfields,fields);_smLastZRangeAt=now;}
     _smLastRenderAt=now;
+    _smAdaptiveBudget(performance.now()-r0);
+    _smRenderedCnt++;
     _smFpsTick();
-    const fpsStr=_smFpsLast?' \u00b7 '+_smFpsLast:'';
-    document.getElementById('streaming-status').textContent='frame '+fid+' \u00b7 '+npoints.toLocaleString()+' pts'+fpsStr;
-    document.getElementById('streaming-status').style.color='#a78bfa';
-    document.getElementById('info').textContent=npoints.toLocaleString()+' pts  \u00b7  Streaming #'+fid;
+    // Throttle UI status update to 1000ms interval (avoid per-frame DOM thrashing)
+    if(now-_smLastUiStatusAt>=1000){
+      const dt=Math.max(1,now-_smLastUiStatusTs);
+      const fetchDelta=_smFetchedCnt-_smFetchedLast;
+      const renderDelta=_smRenderedCnt-_smRenderedLast;
+      const fetchHz=((fetchDelta*1000)/dt).toFixed(1);
+      const renderHz=((renderDelta*1000)/dt).toFixed(1);
+      _smFetchHz=fetchHz;_smRenderHz=renderHz;
+      const fpsStr=_smFpsLast?' · '+_smFpsLast:'';
+      const avgRenderMs=_smRenderMsEwma.toFixed(1);
+      const budgetStatus=(_smRenderMsEwma>40)?'⚠ slow':'✓ ok';
+      const statusMsg='frame '+fid+' · '+npoints.toLocaleString()+' pts'+fpsStr+' (recv:'+fetchHz+'/s render:'+renderHz+'/s cpu:'+avgRenderMs+'ms '+budgetStatus+')';
+      document.getElementById('streaming-status').textContent=statusMsg;
+      document.getElementById('streaming-status').style.color='#a78bfa';
+      document.getElementById('info').textContent=npoints.toLocaleString()+' pts  ·  Streaming #'+fid+' ('+_smCurrentMaxPoints.toLocaleString()+'pts max)';
+      console.log('[Streaming] '+statusMsg);
+      _smLastUiStatusAt=now;
+      _smLastUiStatusTs=now;
+      _smFetchedLast=_smFetchedCnt;
+      _smRenderedLast=_smRenderedCnt;
+    }
   }
   requestAnimationFrame(_smRenderTick);
 }
@@ -569,7 +628,8 @@ let _smPrevColorMode=null;
 async function streamingToggle(){
   if(_smActive){streamingStop();return;}
   _smActive=true;_smLastId=-1;_smPending=null;_smFpsCnt=0;_smFpsT0=performance.now();_smFpsLast='';
-  _smLastRenderAt=0;
+  _smLastRenderAt=0;_smRenderMsEwma=0;_smAdaptCooldownUntil=0;_smLastZRangeAt=0;_smLastUiStatusAt=0;_smLastUiStatusTs=0;
+  _smFetchedCnt=0;_smFetchedLast=0;_smRenderedCnt=0;_smRenderedLast=0;_smLastPollMs=0;_smLastParseMs=0;_smLastRenderMs=0;
   _stopPlay();
   _smLockFileUi(true);
   // Switch to intensity color mode, remembering the previous mode for restore on stop.
@@ -605,6 +665,8 @@ function streamingStop(){
   _smActive=false;
   _smPaused=false;
   _smPending=null;
+  _smLastRenderAt=0;_smRenderMsEwma=0;_smAdaptCooldownUntil=0;_smLastZRangeAt=0;_smLastUiStatusAt=0;
+  _smFetchedCnt=0;_smFetchedLast=0;_smRenderedCnt=0;_smRenderedLast=0;
   _smStopPoll();
   if(_smStatusPoll){clearInterval(_smStatusPoll);_smStatusPoll=null;}
   const pb=document.getElementById('btn-streaming-pause');if(pb){pb.style.display='none';pb.style.background='';}

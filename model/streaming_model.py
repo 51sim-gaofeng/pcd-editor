@@ -19,6 +19,7 @@ import socket
 import struct
 import threading
 import time
+import queue
 
 import numpy as np
 
@@ -85,12 +86,16 @@ _sm_last_src_port: int  = 0
 _sm_running: bool   = False
 
 _sm_vert_angles: np.ndarray = np.empty(0, dtype=np.float32)
+_sm_vert_lut: np.ndarray = np.empty(0, dtype=np.int32)
 _sm_channels: int = 64
+_sm_last_difop_blob: bytes = b''
 _sm_difop_lock = threading.Lock()
 
 _listener_thread      = None
 _listener_stop_evt    = None
 _listener_sock        = None
+_decode_thread        = None
+_decode_queue         = None
 _difop_thread         = None
 _difop_stop_evt       = None
 _difop_sock           = None
@@ -102,6 +107,7 @@ _WS_HEADER_SIZE = struct.calcsize(_WS_HEADER_FMT)  # 20 bytes
 _WS_HEADER_PACK = struct.Struct(_WS_HEADER_FMT).pack
 
 _SM_MAX_POINTS: int = 60_000
+_SM_DECODE_QUEUE_SIZE: int = 4
 
 
 # ── Precomputed packet index arrays ──────────────────────────────────────────
@@ -127,7 +133,7 @@ _custom_abs = _blk_starts[:, None] + _custom_pt_offsets[None, :]  # (12, 14)
 
 def _parse_difop(data: bytes) -> None:
     """Parse a DIFOP calibration packet and update _sm_vert_angles."""
-    global _sm_vert_angles, _sm_channels
+    global _sm_vert_angles, _sm_vert_lut, _sm_channels, _sm_last_difop_blob
     if len(data) < 1248:
         return
     if data[:8] != _DIFOP_ID_BYTES:
@@ -143,16 +149,27 @@ def _parse_difop(data: bytes) -> None:
     p_ver_cali = pitch_low + pitch_high  # 384 bytes, max 128 channels * 3
 
     n_ch = min(n_ch, len(p_ver_cali) // 3)
+    cali_blob = p_ver_cali[:n_ch * 3]
+
+    with _sm_difop_lock:
+        if _sm_channels == n_ch and _sm_last_difop_blob == cali_blob:
+            return
+
     # Vectorized calibration decode (sign, mid, msb triplets).
-    cali = np.frombuffer(p_ver_cali[:n_ch * 3], dtype=np.uint8).reshape(n_ch, 3)
+    cali = np.frombuffer(cali_blob, dtype=np.uint8).reshape(n_ch, 3)
     sign_f = np.where(cali[:, 0] == 0, np.int32(1), np.int32(-1))
     # Result is in 0.01-degree units (same as lookup table index)
     angles = ((cali[:, 1].astype(np.int32) * 256 + cali[:, 2].astype(np.int32))
               * sign_f).astype(np.float32) * 0.1
+    vert_lut = np.mod(angles.astype(np.int32), 36000)
 
     with _sm_difop_lock:
+        if _sm_channels == n_ch and _sm_last_difop_blob == cali_blob:
+            return
         _sm_vert_angles = angles
-        _sm_channels    = n_ch
+        _sm_vert_lut = vert_lut
+        _sm_channels = n_ch
+        _sm_last_difop_blob = cali_blob
     print(f'[Streaming] DIFOP calibration updated: {n_ch} channels', flush=True)
 
 
@@ -165,112 +182,97 @@ def _decode_packets_default(packets: list[bytes]) -> tuple[np.ndarray, int]:
     per-point loops.  ~10-50× faster than the previous scalar implementation.
     """
     with _sm_difop_lock:
-        vert_angles = _sm_vert_angles.copy()
-        n_channels  = _sm_channels
+        vert_lut = _sm_vert_lut
+        n_channels = _sm_channels
 
     # Do not bail early when vert_angles is empty: custom lidars (mLidarModel=0x51)
     # embed azimuth/zenith per-point and don't need DIFOP calibration.
     # For standard lidars, the ch_global bounds-check below skips all channels.
     cnt_block = max(1, (n_channels + _CHANNELS_PER_BLOCK - 1) // _CHANNELS_PER_BLOCK)
-    n_vert = len(vert_angles)
+    n_vert = len(vert_lut)
 
-    # Pre-convert calibration angles to int32 LUT indices once (not per point).
-    if n_vert > 0:
-        vert_lut = np.mod(vert_angles.astype(np.int32), 36000)  # (n_ch,)
-    else:
-        vert_lut = np.empty(0, dtype=np.int32)
-
-    n_pkts = len(packets)
-    # Pre-allocate output for the whole scan (upper bound: every channel valid).
-    max_pts = n_pkts * _BLOCKS_PER_PKT * _CHANNELS_PER_BLOCK
-    result = np.empty((max_pts, 4), dtype=np.float32)
-    out_idx = 0
-
-    for pkt_idx, pkt_data in enumerate(packets):
-        if len(pkt_data) < _PKT_SIZE_DEFAULT:
-            continue
-
-        lidar_model = pkt_data[_HDR_OFF_LIDAR_MODEL]
-        is_custom   = (lidar_model == 0x51)
-
-        # Zero-copy uint8 view of the packet bytes.
-        pkt = np.frombuffer(pkt_data, dtype=np.uint8)
-
-        if is_custom:
-            # ── Vectorised custom lidar decode ────────────────────────────────
-            # _custom_abs: (12, 14) absolute byte offsets of each point's dist byte.
-            # SimOneMSOPPoint: dist(2)+azim(2)+zeni(2)+inten(1) = 7 bytes
-            dist_raw = ((pkt[_custom_abs    ].astype(np.int32) << 8)
-                        | pkt[_custom_abs + 1].astype(np.int32))   # (12, 14)
-            azim_raw = ((pkt[_custom_abs + 2].astype(np.int32) << 8)
-                        | pkt[_custom_abs + 3].astype(np.int32))
-            zeni_raw = ((pkt[_custom_abs + 4].astype(np.int32) << 8)
-                        | pkt[_custom_abs + 5].astype(np.int32))
-            inten    = pkt[_custom_abs + 6]                        # (12, 14) uint8
-
-            valid   = dist_raw > 0
-            vb, vp  = np.where(valid)
-            if len(vb) == 0:
-                continue
-
-            dist_m = dist_raw[vb, vp].astype(np.float32) * _RESOLUTION_5MM
-            azim_v = ((azim_raw[vb, vp] + 36000) % 36000).astype(np.int32)
-            vert_v = ((zeni_raw[vb, vp] - 9000 + 36000) % 36000).astype(np.int32)
-            inten_f = inten[vb, vp].astype(np.float32) * (1.0 / 255.0)
-
-        else:
-            # ── Vectorised standard SimOneDefault decode ──────────────────────
-            # Azimuth: big-endian uint16 at blk_start+2  →  (12,)
-            azim_raw = ((pkt[_blk_starts + 2].astype(np.int32) << 8)
-                        | pkt[_blk_starts + 3].astype(np.int32))
-            azim_blk = (azim_raw + 36000) % 36000  # (12,) centidegrees in LUT
-
-            # Distance (big-endian) and intensity for all (block, channel) → (12, 32)
-            dist_raw = ((pkt[_ch_base    ].astype(np.int32) << 8)
-                        | pkt[_ch_base + 1].astype(np.int32))
-            inten    = pkt[_ch_base + 2]            # (12, 32) uint8
-
-            # Channel group per block — wraps at cnt_block.
-            global_blk = pkt_idx * _BLOCKS_PER_PKT + _blk_range  # (12,)
-            ch_group   = global_blk % cnt_block                    # (12,)
-
-            # Absolute channel index for each (block, channel) → (12, 32)
-            ch_global = ch_group[:, None] * _CHANNELS_PER_BLOCK + _ch_range[None, :]
-
-            # Valid: non-zero distance and within calibration table bounds.
-            valid   = (dist_raw > 0) & (ch_global < n_vert)       # (12, 32)
-            vb, vc  = np.where(valid)
-            if len(vb) == 0:
-                continue
-
-            dist_m  = dist_raw[vb, vc].astype(np.float32) * _RESOLUTION_5MM
-            azim_v  = azim_blk[vb].astype(np.int32)               # (N,)
-            vert_v  = vert_lut[ch_global[vb, vc]]                  # (N,) already int32
-            inten_f = inten[vb, vc].astype(np.float32) * (1.0 / 255.0)
-
-        # ── Polar → Cartesian via LUT (shared for both lidar types) ──────────
-        cos_v = _cos_lut[vert_v]; sin_v = _sin_lut[vert_v]
-        cos_a = _cos_lut[azim_v]; sin_a = _sin_lut[azim_v]
-        x =  dist_m * cos_v * cos_a
-        y = -dist_m * cos_v * sin_a
-        z =  dist_m * sin_v
-
-        n_valid = len(vb)
-        end_idx = out_idx + n_valid
-        if end_idx > max_pts:
-            # Shouldn't normally happen; grow buffer.
-            result = np.vstack([result[:out_idx],
-                                 np.empty((n_valid, 4), dtype=np.float32)])
-            max_pts = len(result)
-        result[out_idx:end_idx, 0] = x
-        result[out_idx:end_idx, 1] = y
-        result[out_idx:end_idx, 2] = z
-        result[out_idx:end_idx, 3] = inten_f
-        out_idx = end_idx
-
-    if out_idx == 0:
+    valid_packets = [pkt for pkt in packets if len(pkt) >= _PKT_SIZE_DEFAULT]
+    if not valid_packets:
         return np.empty((0, 4), dtype=np.float32), 0
-    return result[:out_idx], 0
+
+    frame_buf = b''.join(valid_packets)
+    pkt_arr = np.frombuffer(frame_buf, dtype=np.uint8).reshape(len(valid_packets), _PKT_SIZE_DEFAULT)
+    lidar_models = pkt_arr[:, _HDR_OFF_LIDAR_MODEL]
+
+    result_batches = []
+
+    custom_mask = (lidar_models == 0x51)
+    if np.any(custom_mask):
+        custom_pkts = pkt_arr[custom_mask]
+        dist_raw = ((custom_pkts[:, _custom_abs].astype(np.int32) << 8)
+                    | custom_pkts[:, _custom_abs + 1].astype(np.int32))
+        valid = dist_raw > 0
+        if np.any(valid):
+            azim_raw = ((custom_pkts[:, _custom_abs + 2].astype(np.int32) << 8)
+                        | custom_pkts[:, _custom_abs + 3].astype(np.int32))
+            zeni_raw = ((custom_pkts[:, _custom_abs + 4].astype(np.int32) << 8)
+                        | custom_pkts[:, _custom_abs + 5].astype(np.int32))
+            inten = custom_pkts[:, _custom_abs + 6]
+
+            dist_m = dist_raw[valid].astype(np.float32) * _RESOLUTION_5MM
+            azim_v = np.mod(azim_raw[valid] + 36000, 36000).astype(np.int32)
+            vert_v = np.mod(zeni_raw[valid] - 9000 + 36000, 36000).astype(np.int32)
+            inten_f = inten[valid].astype(np.float32) * (1.0 / 255.0)
+
+            cos_v = _cos_lut[vert_v]
+            sin_v = _sin_lut[vert_v]
+            cos_a = _cos_lut[azim_v]
+            sin_a = _sin_lut[azim_v]
+
+            batch = np.empty((len(dist_m), 4), dtype=np.float32)
+            batch[:, 0] = dist_m * cos_v * cos_a
+            batch[:, 1] = -dist_m * cos_v * sin_a
+            batch[:, 2] = dist_m * sin_v
+            batch[:, 3] = inten_f
+            result_batches.append(batch)
+
+    standard_mask = ~custom_mask
+    if np.any(standard_mask) and n_vert > 0:
+        standard_pkts = pkt_arr[standard_mask]
+        standard_pkt_idx = np.nonzero(standard_mask)[0].astype(np.int32)
+
+        azim_raw = ((standard_pkts[:, _blk_starts + 2].astype(np.int32) << 8)
+                    | standard_pkts[:, _blk_starts + 3].astype(np.int32))
+        azim_blk = np.mod(azim_raw + 36000, 36000)
+
+        dist_raw = ((standard_pkts[:, _ch_base].astype(np.int32) << 8)
+                    | standard_pkts[:, _ch_base + 1].astype(np.int32))
+        inten = standard_pkts[:, _ch_base + 2]
+
+        global_blk = standard_pkt_idx[:, None] * _BLOCKS_PER_PKT + _blk_range[None, :]
+        ch_group = global_blk % cnt_block
+        ch_global = ch_group[:, :, None] * _CHANNELS_PER_BLOCK + _ch_range[None, None, :]
+
+        valid = (dist_raw > 0) & (ch_global < n_vert)
+        if np.any(valid):
+            pkt_i, blk_i, ch_i = np.nonzero(valid)
+            dist_m = dist_raw[pkt_i, blk_i, ch_i].astype(np.float32) * _RESOLUTION_5MM
+            azim_v = azim_blk[pkt_i, blk_i].astype(np.int32)
+            vert_v = vert_lut[ch_global[pkt_i, blk_i, ch_i]]
+            inten_f = inten[pkt_i, blk_i, ch_i].astype(np.float32) * (1.0 / 255.0)
+
+            cos_v = _cos_lut[vert_v]
+            sin_v = _sin_lut[vert_v]
+            cos_a = _cos_lut[azim_v]
+            sin_a = _sin_lut[azim_v]
+
+            batch = np.empty((len(dist_m), 4), dtype=np.float32)
+            batch[:, 0] = dist_m * cos_v * cos_a
+            batch[:, 1] = -dist_m * cos_v * sin_a
+            batch[:, 2] = dist_m * sin_v
+            batch[:, 3] = inten_f
+            result_batches.append(batch)
+
+    if not result_batches:
+        return np.empty((0, 4), dtype=np.float32), 0
+    if len(result_batches) == 1:
+        return result_batches[0], 0
+    return np.vstack(result_batches), 0
 
 
 # ── WS payload formatter ──────────────────────────────────────────────────────
@@ -423,18 +425,66 @@ def _udp_listener_thread(host: str, port: int, stop_evt: threading.Event) -> Non
     mode = 'multicast' if is_mcast else ('broadcast' if is_bcast else 'unicast')
     print(f'[Streaming] MSOP listener on {bind_addr}:{port} ({mode}={host})', flush=True)
 
+    with _sm_lock:
+        decode_queue = _decode_queue
+
     # Per-scan packet accumulator
     scan_packets: list[bytes] = []
     lidar_type = _LIDAR_TYPE_NONE
     frame_counter = 0
+    last_stat_t = time.time()
+    last_stat_frame = 0
+    stat_msop_packets = 0
+    stat_msop_end_flags = 0
+    stat_pkt_id_gaps = 0
+    stat_missing_packets = 0
+    stat_scan_packet_total = 0
+    stat_enqueued_frames = 0
+    stat_queue_drops = 0
+    scan_last_pkt_id = None
+
+    def _emit_stats(now: float) -> None:
+        nonlocal last_stat_t, last_stat_frame
+        nonlocal stat_msop_packets, stat_msop_end_flags, stat_pkt_id_gaps
+        nonlocal stat_missing_packets, stat_scan_packet_total
+        nonlocal stat_enqueued_frames, stat_queue_drops
+        dt = now - last_stat_t
+        if dt < 5.0:
+            return
+        fps = (frame_counter - last_stat_frame) / dt if dt > 0 else 0.0
+        pps = stat_msop_packets / dt if dt > 0 else 0.0
+        end_hz = stat_msop_end_flags / dt if dt > 0 else 0.0
+        avg_scan_pkts = (stat_scan_packet_total / stat_msop_end_flags) if stat_msop_end_flags > 0 else 0.0
+        queue_depth = decode_queue.qsize() if decode_queue is not None else 0
+        print(
+            '[Streaming] statistics: '
+            f'{fps:.1f} fps, msop:{pps:.0f} pkt/s, end:{end_hz:.1f}/s, '
+            f'avg_scan:{avg_scan_pkts:.1f} pkt, enq:{stat_enqueued_frames}, '
+            f'qdrop:{stat_queue_drops}, qdepth:{queue_depth}, '
+            f'pkt_gaps:{stat_pkt_id_gaps}, missing:{stat_missing_packets}, buffered:{len(scan_packets)}',
+            flush=True,
+        )
+        last_stat_t = now
+        last_stat_frame = frame_counter
+        stat_msop_packets = 0
+        stat_msop_end_flags = 0
+        stat_pkt_id_gaps = 0
+        stat_missing_packets = 0
+        stat_scan_packet_total = 0
+        stat_enqueued_frames = 0
+        stat_queue_drops = 0
 
     while not stop_evt.is_set():
         try:
             data, addr = sock.recvfrom(2048)
         except socket.timeout:
+            now = time.time()
+            _emit_stats(now)
             continue
         except Exception:
             continue
+
+        _emit_stats(time.time())
 
         if addr:
             global _sm_last_src_host, _sm_last_src_port
@@ -461,20 +511,42 @@ def _udp_listener_thread(host: str, port: int, stop_evt: threading.Event) -> Non
             # Validate MSOP magic
             if data[:8] != _MSOP_ID_BYTES:
                 continue
+            stat_msop_packets += 1
             pkt_flag, = struct.unpack_from('<H', data, _HDR_OFF_PKT_FLAG)
+            pkt_id, = struct.unpack_from('<H', data, _HDR_OFF_PKT_ID)
+
+            if scan_last_pkt_id is not None:
+                delta = (pkt_id - scan_last_pkt_id) & 0xFFFF
+                if delta > 1:
+                    stat_pkt_id_gaps += 1
+                    stat_missing_packets += delta - 1
+            scan_last_pkt_id = pkt_id
+
             scan_packets.append(data)  # `data` from recvfrom is already bytes
 
             if pkt_flag == _FLAG_END:
                 # Full scan received — decode and push
+                stat_msop_end_flags += 1
+                stat_scan_packet_total += len(scan_packets)
                 frame_counter += 1
-                if scan_packets:
+                if scan_packets and decode_queue is not None:
+                    frame_item = (frame_counter, tuple(scan_packets))
                     try:
-                        points, _ = _decode_packets_default(scan_packets)
-                        if len(points) > 0:
-                            _store_frame(points, frame_counter)
-                    except Exception as e:
-                        print(f'[Streaming] decode error: {e}', flush=True)
+                        decode_queue.put_nowait(frame_item)
+                        stat_enqueued_frames += 1
+                    except queue.Full:
+                        try:
+                            decode_queue.get_nowait()
+                            stat_queue_drops += 1
+                        except queue.Empty:
+                            pass
+                        try:
+                            decode_queue.put_nowait(frame_item)
+                            stat_enqueued_frames += 1
+                        except queue.Full:
+                            stat_queue_drops += 1
                 scan_packets = []
+                scan_last_pkt_id = None
 
         else:
             # RSM1 / Hesai — these vendor formats need full proprietary decoders;
@@ -492,6 +564,31 @@ def _udp_listener_thread(host: str, port: int, stop_evt: threading.Event) -> Non
         _sm_running = False
 
 
+def _decode_worker_thread(stop_evt: threading.Event) -> None:
+    while not stop_evt.is_set():
+        with _sm_lock:
+            decode_queue = _decode_queue
+        if decode_queue is None:
+            return
+        try:
+            frame_id, scan_packets = decode_queue.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        try:
+            t_dec0 = time.perf_counter()
+            points, _ = _decode_packets_default(list(scan_packets))
+            t_dec_ms = (time.perf_counter() - t_dec0) * 1000.0
+            if len(points) > 0:
+                _store_frame(points, frame_id)
+                print(f'[Streaming] frame {frame_id} decoded: {len(points)} pts in {t_dec_ms:.1f}ms', flush=True)
+            else:
+                print(f'[Streaming] frame {frame_id} decoded: 0 pts in {t_dec_ms:.1f}ms', flush=True)
+        except Exception as e:
+            print(f'[Streaming] decode error: {e}', flush=True)
+        finally:
+            decode_queue.task_done()
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def set_max_live_points(n: int) -> None:
@@ -501,11 +598,14 @@ def set_max_live_points(n: int) -> None:
 
 def stop_udp_listener() -> None:
     global _listener_thread, _listener_stop_evt, _listener_sock
+    global _decode_thread, _decode_queue
     global _difop_thread, _difop_stop_evt, _difop_sock
     with _sm_lock:
         t    = _listener_thread
         evt  = _listener_stop_evt
         sock = _listener_sock
+        dec_t = _decode_thread
+        dec_q = _decode_queue
         dt   = _difop_thread
         devt = _difop_stop_evt
         dsock = _difop_sock
@@ -519,13 +619,22 @@ def stop_udp_listener() -> None:
                 s.close()
             except Exception:
                 pass
-    for th in (t, dt):
+    if dec_q is not None:
+        try:
+            while True:
+                dec_q.get_nowait()
+                dec_q.task_done()
+        except queue.Empty:
+            pass
+    for th in (t, dec_t, dt):
         if th:
             th.join(timeout=1.0)
     with _sm_lock:
         _listener_thread   = None
         _listener_stop_evt = None
         _listener_sock     = None
+        _decode_thread     = None
+        _decode_queue      = None
         _difop_thread      = None
         _difop_stop_evt    = None
         _difop_sock        = None
@@ -534,27 +643,36 @@ def stop_udp_listener() -> None:
 def start_udp_listener(port: int, host: str = '127.0.0.1',
                         info_port: int = 7788) -> None:
     global _listener_thread, _listener_stop_evt
+    global _decode_thread, _decode_queue
     global _difop_thread, _difop_stop_evt
     global _sm_info_port
     stop_udp_listener()
     # Reset angle calibration when rebinding (new lidar may have different angles)
     with _sm_difop_lock:
-        global _sm_vert_angles, _sm_channels
+        global _sm_vert_angles, _sm_vert_lut, _sm_channels, _sm_last_difop_blob
         _sm_vert_angles = np.empty(0, dtype=np.float32)
+        _sm_vert_lut    = np.empty(0, dtype=np.int32)
         _sm_channels    = 64
+        _sm_last_difop_blob = b''
 
     msop_evt  = threading.Event()
     difop_evt = threading.Event()
+    dec_q = queue.Queue(maxsize=_SM_DECODE_QUEUE_SIZE)
     msop_t  = threading.Thread(target=_udp_listener_thread,
                                 args=(host, port, msop_evt), daemon=True)
+    dec_t = threading.Thread(target=_decode_worker_thread,
+                                args=(msop_evt,), daemon=True)
     difop_t = threading.Thread(target=_difop_listener_thread,
                                 args=(host, info_port, difop_evt), daemon=True)
     with _sm_lock:
         _listener_stop_evt = msop_evt
         _listener_thread   = msop_t
+        _decode_queue      = dec_q
+        _decode_thread     = dec_t
         _difop_stop_evt    = difop_evt
         _difop_thread      = difop_t
         _sm_info_port      = info_port
+    dec_t.start()
     msop_t.start()
     difop_t.start()
 
