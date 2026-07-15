@@ -27,12 +27,19 @@ from model.streaming_model import (
 )
 from model.file_model import _preload_all, list_pcd_files
 from model.gaussian_model import list_gaussian_files
-from model.pcd_model import get_pcd_binary_cached, parse_pcd, save_pcd
+from model.pcd_model import (
+    get_pcd_binary_cached,
+    get_pcd_max_points,
+    parse_pcd,
+    save_pcd,
+    set_pcd_max_points,
+)
 from model.trajectory_model import (
     list_trajectories,
     load_trajectory,
     save_trajectory,
 )
+from config import get_app_info, get_welcome_pref, set_welcome_pref
 
 _STATIC_MIME = {
     '.css':  'text/css',
@@ -193,6 +200,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/pick_file':
             self._handle_pick_file(params)
 
+        elif path == '/api/pick_ply':
+            self._handle_pick_ply(params)
+
         elif path == '/api/pick_dir':
             self._handle_pick_dir(params)
 
@@ -274,6 +284,17 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, IndexError):
                 self._json({'ok': False})
 
+        elif path == '/api/pcd_set_max_points':
+            try:
+                n = int(params.get('n', ['300000'])[0])
+                set_pcd_max_points(n)
+                self._json({'ok': True, 'max_points': get_pcd_max_points()})
+            except (ValueError, IndexError):
+                self._json({'ok': False})
+
+        elif path == '/api/pcd_max_points':
+            self._json({'max_points': get_pcd_max_points()})
+
         elif path == '/api/open_in_explorer':
             self._handle_open_explorer(params)
 
@@ -310,6 +331,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({'error': 'not found'}); return
             self._serve_ply(full)
 
+        elif path == '/api/app_info':
+            self._json(get_app_info())
+
+        elif path == '/api/welcome_pref':
+            self._json({'show_welcome_on_startup': get_welcome_pref()})
+
         else:
             self.send_error(404)
 
@@ -329,6 +356,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_save_pcd(body)
         elif parsed.path == '/api/traj_export':
             self._handle_traj_export(body)
+        elif parsed.path == '/api/welcome_pref':
+            self._handle_welcome_pref_post(body)
         else:
             self.send_error(404)
 
@@ -387,6 +416,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({'error': str(e)})
         else:
             self._json({'files': list_trajectories()})
+
+    def _handle_welcome_pref_post(self, body: bytes):
+        try:
+            data = json.loads(body or b'{}')
+            set_welcome_pref(bool(data.get('show_welcome_on_startup', True)))
+            self._json({'ok': True, 'show_welcome_on_startup': get_welcome_pref()})
+        except Exception as e:
+            self._json({'ok': False, 'error': str(e)})
 
     def _handle_trajectory_post(self, body: bytes):
         try:
@@ -552,6 +589,30 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=_preload_all, daemon=True).start()
             self._json({'path': picked or '', 'data_dir': config.data_dir,
                         'fname': os.path.basename(picked) if picked else ''})
+        except Exception as e:
+            self._json({'path': '', 'error': str(e)})
+
+    def _handle_pick_ply(self, params):
+        """Native OS file picker for .ply (3DGS) files.
+
+        Unlike drag-and-drop (which must upload the file's bytes to the server
+        since browsers never expose a dropped file's real path), this returns the
+        real absolute path so the caller can load it directly via /api/ply_abs —
+        no copy, no upload, works for arbitrarily large scenes.
+        """
+        from config import config
+        init_dir = params.get('dir', [''])[0] or config.data_dir
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)
+            picked = filedialog.askopenfilename(
+                title='选择 PLY 文件 (3DGS)', initialdir=init_dir,
+                filetypes=[('PLY files', '*.ply'), ('All files', '*.*')])
+            root.destroy()
+            if picked:
+                picked = os.path.normpath(picked)
+            self._json({'path': picked or '', 'fname': os.path.basename(picked) if picked else ''})
         except Exception as e:
             self._json({'path': '', 'error': str(e)})
 

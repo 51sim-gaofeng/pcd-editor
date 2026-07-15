@@ -109,6 +109,26 @@ _WS_HEADER_PACK = struct.Struct(_WS_HEADER_FMT).pack
 _SM_MAX_POINTS: int = 60_000
 _SM_DECODE_QUEUE_SIZE: int = 4
 
+# ── Diagnostics: periodically-refreshed pipeline health snapshot ─────────────
+# Populated every ~5s by the UDP listener (network-side) and the decode worker
+# (compute-side) so the frontend / status API can tell *where* frames are
+# actually being lost — network packet loss, decode-queue drops, or the
+# render-side fps cap — instead of guessing.
+_sm_diag_lock = threading.Lock()
+_sm_diag: dict = {
+    'scan_hz':            0.0,  # complete scans (END flag) observed on the wire per second
+    'pkt_hz':              0.0,  # raw MSOP packets received per second
+    'avg_scan_pkts':        0.0,  # average packet count per scan
+    'missing_pkts_per_sec': 0.0,  # UDP packet loss inferred from pkt_id gaps
+    'enqueued_per_sec':     0.0,  # scans successfully handed to the decode queue
+    'queue_drop_per_sec':   0.0,  # scans dropped because the decode queue was full
+    'queue_depth':          0,    # current decode queue occupancy
+    'decode_hz':            0.0,  # frames actually decoded + stored per second
+    'decode_avg_ms':        0.0,  # average decode time per frame
+    'store_avg_ms':         0.0,  # average downsample+pack time per frame
+    'updated_at':           0.0,
+}
+
 
 # ── Precomputed packet index arrays ──────────────────────────────────────────
 # Block start byte offsets within one MSOP packet (12 blocks).
@@ -445,11 +465,30 @@ def _udp_listener_thread(host: str, port: int, stop_evt: threading.Event) -> Non
         dt = now - last_stat_t
         if dt < 5.0:
             return
-        fps = (frame_counter - last_stat_frame) / dt if dt > 0 else 0.0
         pps = stat_msop_packets / dt if dt > 0 else 0.0
         end_hz = stat_msop_end_flags / dt if dt > 0 else 0.0
         avg_scan_pkts = (stat_scan_packet_total / stat_msop_end_flags) if stat_msop_end_flags > 0 else 0.0
+        missing_pps = stat_missing_packets / dt if dt > 0 else 0.0
+        enq_pps = stat_enqueued_frames / dt if dt > 0 else 0.0
+        drop_pps = stat_queue_drops / dt if dt > 0 else 0.0
         queue_depth = decode_queue.qsize() if decode_queue is not None else 0
+        with _sm_diag_lock:
+            _sm_diag['scan_hz']              = round(end_hz, 2)
+            _sm_diag['pkt_hz']               = round(pps, 1)
+            _sm_diag['avg_scan_pkts']        = round(avg_scan_pkts, 1)
+            _sm_diag['missing_pkts_per_sec'] = round(missing_pps, 2)
+            _sm_diag['enqueued_per_sec']     = round(enq_pps, 2)
+            _sm_diag['queue_drop_per_sec']   = round(drop_pps, 2)
+            _sm_diag['queue_depth']          = queue_depth
+            _sm_diag['updated_at']           = now
+        print(
+            f'[Streaming] recv {end_hz:.1f} fps  |  {pps:.0f} pkt/s  |  avg {avg_scan_pkts:.0f} pkt/scan'
+            f'  |  missing {missing_pps:.1f} pkt/s  |  enqueued {enq_pps:.1f} fps  |  queue drop {drop_pps:.1f} fps'
+            f'  |  queue depth {queue_depth}',
+            flush=True,
+        )
+        if end_hz > 0 and missing_pps > 0.5:
+            print('[Streaming] warning: UDP packet loss detected on the wire (missing_pkts_per_sec > 0.5)', flush=True)
         last_stat_t = now
         last_stat_frame = frame_counter
         stat_msop_packets = 0
@@ -551,6 +590,10 @@ def _udp_listener_thread(host: str, port: int, stop_evt: threading.Event) -> Non
 
 
 def _decode_worker_thread(stop_evt: threading.Event) -> None:
+    win_start = time.time()
+    win_decoded = 0
+    win_decode_ms = 0.0
+    win_store_ms = 0.0
     while not stop_evt.is_set():
         with _sm_lock:
             decode_queue = _decode_queue
@@ -563,13 +606,38 @@ def _decode_worker_thread(stop_evt: threading.Event) -> None:
         try:
             t_dec0 = time.perf_counter()
             points, _ = _decode_packets_default(list(scan_packets))
-            _ = (time.perf_counter() - t_dec0) * 1000.0
+            decode_ms = (time.perf_counter() - t_dec0) * 1000.0
             if len(points) > 0:
+                t_store0 = time.perf_counter()
                 _store_frame(points, frame_id)
+                store_ms = (time.perf_counter() - t_store0) * 1000.0
+                win_decoded += 1
+                win_decode_ms += decode_ms
+                win_store_ms += store_ms
         except Exception:
             pass
         finally:
             decode_queue.task_done()
+
+        now = time.time()
+        dt = now - win_start
+        if dt >= 5.0:
+            decode_hz = round(win_decoded / dt, 2) if dt > 0 else 0.0
+            decode_avg_ms = round(win_decode_ms / win_decoded, 2) if win_decoded > 0 else 0.0
+            store_avg_ms = round(win_store_ms / win_decoded, 2) if win_decoded > 0 else 0.0
+            with _sm_diag_lock:
+                _sm_diag['decode_hz']     = decode_hz
+                _sm_diag['decode_avg_ms'] = decode_avg_ms
+                _sm_diag['store_avg_ms']  = store_avg_ms
+            print(
+                f'[Streaming] decode {decode_hz:.1f} fps  |  {decode_avg_ms:.2f} ms/frame decode'
+                f'  |  {store_avg_ms:.2f} ms/frame store',
+                flush=True,
+            )
+            win_start = now
+            win_decoded = 0
+            win_decode_ms = 0.0
+            win_store_ms = 0.0
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -637,6 +705,9 @@ def start_udp_listener(port: int, host: str = '127.0.0.1',
         _sm_vert_lut    = np.empty(0, dtype=np.int32)
         _sm_channels    = 64
         _sm_last_difop_blob = b''
+    with _sm_diag_lock:
+        for k in _sm_diag:
+            _sm_diag[k] = 0.0 if k != 'updated_at' else 0.0
 
     msop_evt  = threading.Event()
     difop_evt = threading.Event()
@@ -691,7 +762,7 @@ def get_receiver_config() -> dict:
 def get_status() -> dict:
     with _sm_lock:
         age_ms = round((time.time() - _sm_last_ts) * 1000) if _sm_last_ts > 0 else -1
-        return {
+        status = {
             'running':    _sm_running,
             'recv_count': _sm_recv_count,
             'frame_id':   _sm_frame_id,
@@ -700,6 +771,9 @@ def get_status() -> dict:
             'bind_port':  _sm_bind_port,
             'info_port':  _sm_info_port,
         }
+    with _sm_diag_lock:
+        status['diag'] = dict(_sm_diag)
+    return status
 
 
 def get_latest_frame(after_id: int = -1):

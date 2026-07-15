@@ -3,6 +3,56 @@ import os
 import sys
 import json
 import argparse
+import subprocess
+
+APP_NAME = '51sim Sensor Data Viewer'
+APP_VERSION = '0.6'
+
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+_app_info_cache = None
+
+
+def get_app_info() -> dict:
+    """Return app name/version/git-commit/build-time metadata (cached).
+
+    - `build_time` prefers the `PCDVIEWER_BUILD_TIME` env var (settable by CI/build
+      scripts); falls back to the git commit date; falls back to 'unknown'.
+    - `git_commit` comes from `git rev-parse --short HEAD`; 'unknown' if unavailable
+      (e.g. running from a PyInstaller bundle without a `.git` directory).
+    """
+    global _app_info_cache
+    if _app_info_cache is not None:
+        return _app_info_cache
+
+    git_commit = 'unknown'
+    git_date = ''
+    try:
+        out = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            cwd=_REPO_ROOT, capture_output=True, text=True, timeout=2)
+        if out.returncode == 0 and out.stdout.strip():
+            git_commit = out.stdout.strip()
+    except Exception:
+        pass
+    try:
+        out = subprocess.run(
+            ['git', 'log', '-1', '--format=%cI'],
+            cwd=_REPO_ROOT, capture_output=True, text=True, timeout=2)
+        if out.returncode == 0 and out.stdout.strip():
+            git_date = out.stdout.strip()
+    except Exception:
+        pass
+
+    build_time = os.environ.get('PCDVIEWER_BUILD_TIME', '') or git_date or 'unknown'
+
+    _app_info_cache = {
+        'app_name': APP_NAME,
+        'version': APP_VERSION,
+        'git_commit': git_commit,
+        'build_time': build_time,
+        'platform': sys.platform,
+    }
+    return _app_info_cache
 
 
 def _state_path() -> str:
@@ -14,26 +64,47 @@ def _state_path() -> str:
     return os.path.join(base, '51sim_sensor_viewer', 'state.json')
 
 
-def save_last_dir(path: str) -> None:
-    """Persist the last-used data directory."""
+def _read_state() -> dict:
+    """Return the full persisted state dict, or {} if missing/corrupt."""
+    try:
+        with open(_state_path(), 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _write_state(patch: dict) -> None:
+    """Merge `patch` into the persisted state file and write it back."""
     try:
         p = _state_path()
         os.makedirs(os.path.dirname(p), exist_ok=True)
+        state = _read_state()
+        state.update(patch)
         with open(p, 'w', encoding='utf-8') as f:
-            json.dump({'last_dir': path}, f)
+            json.dump(state, f)
     except Exception:
         pass
 
 
+def save_last_dir(path: str) -> None:
+    """Persist the last-used data directory."""
+    _write_state({'last_dir': path})
+
+
 def _load_last_dir() -> str:
     """Return the last-used directory, or '' if not saved."""
-    try:
-        with open(_state_path(), 'r', encoding='utf-8') as f:
-            d = json.load(f)
-        path = d.get('last_dir', '')
-        return path if path and os.path.isdir(path) else ''
-    except Exception:
-        return ''
+    path = _read_state().get('last_dir', '')
+    return path if path and os.path.isdir(path) else ''
+
+
+def get_welcome_pref() -> bool:
+    """Return whether the welcome screen should be shown on startup (default True)."""
+    return bool(_read_state().get('show_welcome_on_startup', True))
+
+
+def set_welcome_pref(show: bool) -> None:
+    """Persist the welcome-screen-on-startup preference."""
+    _write_state({'show_welcome_on_startup': bool(show)})
 
 
 class _Config:

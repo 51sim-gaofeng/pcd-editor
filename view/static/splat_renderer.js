@@ -40,6 +40,10 @@ uniform float u_splatScale;    // user scale multiplier (default 1.0)
 uniform vec3  u_camPos;        // camera position in world
 uniform int   u_shCoeffCount;  // number of SH coeff texels per splat
 uniform int   u_shDegree;      // 0..3
+uniform float u_filterActive;  // 0=off, 1=on
+uniform float u_filterMin;     // world-space Z lower bound
+uniform float u_filterMax;     // world-space Z upper bound
+uniform float u_filterMode;    // 0=keep (show inside range), 1=exclude (hide inside range)
 
 in vec3 position;              // quad corner in [-2, 2] range (local splat space)
 
@@ -72,6 +76,18 @@ void main() {
 
     /* view-space position */
     vec3 worldPos = u_modelRot * (px0.xyz - u_modelPivot) + u_modelPivot;
+
+    /* Z-height filter (world-space, matches the PCD Filter Z semantics) */
+    if (u_filterActive > 0.5) {
+        bool inside = worldPos.z >= u_filterMin && worldPos.z <= u_filterMax;
+        bool visible = (u_filterMode < 0.5) ? inside : !inside;
+        if (!visible) {
+            gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+            vColor = vec4(0.0); vPos2 = vec2(0.0);
+            return;
+        }
+    }
+
     vec4 cam  = u_view * vec4(worldPos, 1.0);
     vec4 clip = u_proj * cam;
 
@@ -248,6 +264,32 @@ void main() {
 
 const TEX_W = 1024;   // fallback texture width
 
+/**
+ * Estimate a safe upper bound on splat count for the given renderer, based on
+ * the GPU's reported max 2D texture dimension (a real, queryable hardware
+ * limit — unlike the driver's internal "total allocation size" ceiling seen in
+ * some "glTexStorage2D: too large" errors, which isn't discoverable via any
+ * WebGL API and varies a lot by GPU/driver). We intentionally do NOT apply an
+ * extra conservative byte-budget heuristic here anymore: it silently cut
+ * splat counts far below what most hardware can actually handle. Users who
+ * hit a real texture-allocation failure should lower the "Max pts" slider in
+ * the GS panel instead of everyone paying an unconditional quality tax.
+ */
+export function estimateSafeMaxSplats(renderer, shCoeffCount = 0) {
+    const maxDim = renderer?.capabilities?.maxTextureSize || 8192;
+    const texW   = Math.max(TEX_W, Math.min(maxDim, 8192));
+    const maxH   = Math.max(1, maxDim);
+
+    // dataTex: 3 texels/splat, RGBA32F
+    let cap = Math.floor((texW * maxH) / 3);
+
+    // shTex (if SH degree > 0 requested): shCoeffCount texels/splat, RGBA32F
+    if (shCoeffCount > 0) {
+        cap = Math.min(cap, Math.floor((texW * maxH) / shCoeffCount));
+    }
+    return Math.max(100000, cap);
+}
+
 export class SplatRenderer {
     constructor(renderer, camera, scene) {
         this.renderer  = renderer;
@@ -260,6 +302,10 @@ export class SplatRenderer {
         this._modelPivot = new THREE.Vector3(0, 0, 0);
         this._modelRotMat3 = new THREE.Matrix3().identity();
         this._modelRotIsIdentity = true;
+        this._filterActive = false;
+        this._filterMin = 0;
+        this._filterMax = 1;
+        this._filterMode = 0.0;   // 0=keep, 1=exclude
 
         this._mesh         = null;
         this._dataTex      = null;   // RGBA32F, 3 texels per splat
@@ -272,6 +318,7 @@ export class SplatRenderer {
         this._maxVisibleSplats = 20000000;
         this._minScreenPxCull  = 0.0;
         this._texW = Math.max(TEX_W, Math.min((renderer.capabilities?.maxTextureSize || TEX_W), 8192));
+        this._maxTexH = Math.max(1, renderer.capabilities?.maxTextureSize || 8192);
 
         this._sortWorker   = null;
         this._sortPending  = false;
@@ -288,6 +335,7 @@ export class SplatRenderer {
         // stay on the main thread so appendChunk() can always write to them safely.
         this._sortCentersBuf = null;  // Float32Array reused across sort calls
         this._sortRadiiBuf   = null;
+        this._visibleCount   = 0;    // splats actually submitted to the GPU after culling/filter
 
         this._initSortWorker();
     }
@@ -298,13 +346,14 @@ export class SplatRenderer {
         const url = new URL('./splat_sort_worker.js', import.meta.url).href;
         this._sortWorker = new Worker(url);
         this._sortWorker.onmessage = (e) => {
-            const { type, indices, sortTime, centers, radii, seq } = e.data;
+            const { type, indices, sortTime, centers, radii, seq, visibleCount } = e.data;
             if (type !== 'sorted') return;
             // Reclaim ping-pong sort buffers (main thread _centersF32/_radiusF32 are untouched)
             if (centers) this._sortCentersBuf = new Float32Array(centers);
             if (radii)   this._sortRadiiBuf   = new Float32Array(radii);
             this._sortPending = false;
             this._lastSortMs  = sortTime;
+            this._visibleCount = visibleCount ?? indices.byteLength / 4;
 
             // Ignore stale sort results when camera already moved far away from the
             // request pose (typical during fast retreat/fast orbit).
@@ -405,11 +454,11 @@ export class SplatRenderer {
         const minPx = minSplats * 3;
         const oldPx = this._dataTex ? this._dataTex.image.width * this._dataTex.image.height : 0;
         const cap   = Math.max(minPx, Math.ceil(oldPx * 1.5), TEX_W);
-        const h     = Math.ceil(cap / this._texW);
+        const h     = Math.min(Math.ceil(cap / this._texW), this._maxTexH);
 
         const data = new Float32Array(this._texW * h * 4);
         if (this._dataTex) {
-            data.set(this._dataTex.image.data);
+            data.set(this._dataTex.image.data.subarray(0, Math.min(this._dataTex.image.data.length, data.length)));
             this._dataTex.dispose();
         }
 
@@ -424,11 +473,11 @@ export class SplatRenderer {
     _growIdxTex(minSplats) {
         const oldN = this._idxTex ? this._idxTex.image.width * this._idxTex.image.height : 0;
         const cap  = Math.max(minSplats, Math.ceil(oldN * 1.5), TEX_W);
-        const h    = Math.ceil(cap / this._texW);
+        const h    = Math.min(Math.ceil(cap / this._texW), this._maxTexH);
 
         const data = new Float32Array(this._texW * h * 2);
         if (this._idxTex) {
-            data.set(this._idxTex.image.data);
+            data.set(this._idxTex.image.data.subarray(0, Math.min(this._idxTex.image.data.length, data.length)));
             this._idxTex.dispose();
         }
 
@@ -445,10 +494,10 @@ export class SplatRenderer {
         const minPx = minSplats * this._shCoeffCount;
         const oldPx = this._shTex ? this._shTex.image.width * this._shTex.image.height : 0;
         const cap = Math.max(minPx, Math.ceil(oldPx * 1.5), this._texW);
-        const h = Math.ceil(cap / this._texW);
+        const h = Math.min(Math.ceil(cap / this._texW), this._maxTexH);
         const data = new Float32Array(this._texW * h * 4);
         if (this._shTex) {
-            data.set(this._shTex.image.data);
+            data.set(this._shTex.image.data.subarray(0, Math.min(this._shTex.image.data.length, data.length)));
             this._shTex.dispose();
         }
         this._shTex = new THREE.DataTexture(data, this._texW, h, THREE.RGBAFormat, THREE.FloatType);
@@ -492,6 +541,10 @@ export class SplatRenderer {
                 u_saturation:  { value: 1.0 },
                 u_temperature: { value: 0.0 },
                 u_hueShift:    { value: 0.0 },
+                u_filterActive:{ value: this._filterActive ? 1.0 : 0.0 },
+                u_filterMin:   { value: this._filterMin },
+                u_filterMax:   { value: this._filterMax },
+                u_filterMode:  { value: this._filterMode },
             },
             blending:          THREE.CustomBlending,
             blendEquation:     THREE.AddEquation,
@@ -603,7 +656,11 @@ export class SplatRenderer {
               minPx: this._minScreenPxCull,
                             // Avoid hard far-distance pop-in on very large scenes.
                             // Keep far cull effectively disabled unless explicitly overridden.
-                            farCull: 1.0e12
+                            farCull: 1.0e12,
+              filterActive: this._filterActive,
+              filterMin: this._filterMin,
+              filterMax: this._filterMax,
+              filterMode: this._filterMode
             },
             transferList
         );
@@ -672,9 +729,41 @@ export class SplatRenderer {
         return { brightness: 0, contrast: 1, saturation: 1, temperature: 0, hueShift: 0 };
     }
 
+    /** Splats actually rendered after culling/Z-filter (<= numSplats). */
+    getVisibleCount() {
+        return this._visibleCount || this.numSplats;
+    }
+
     resetColorAdjust() {
         const d = this.getColorDefaults();
         for (const [k, v] of Object.entries(d)) this.setColorAdjust(k, v);
+    }
+
+    /* ── Z-height filter API (mirrors the static-PCD Filter Z panel) ── */
+    applyFilter(zMin, zMax, mode) {
+        this._filterActive = true;
+        this._filterMin = zMin;
+        this._filterMax = zMax;
+        this._filterMode = (mode === 'exclude') ? 1.0 : 0.0;
+        if (!this._mesh) return;
+        const u = this._mesh.material.uniforms;
+        u.u_filterActive.value = 1.0;
+        u.u_filterMin.value = zMin;
+        u.u_filterMax.value = zMax;
+        u.u_filterMode.value = this._filterMode;
+        // Force an immediate re-cull/re-sort so instanceCount actually shrinks —
+        // the vertex-shader clip alone only hides splats visually, it doesn't
+        // reduce the number of GPU vertex-shader invocations.
+        this._sortNeeded = true;
+        this.requestSort();
+    }
+
+    resetFilter() {
+        this._filterActive = false;
+        if (!this._mesh) return;
+        this._mesh.material.uniforms.u_filterActive.value = 0.0;
+        this._sortNeeded = true;
+        this.requestSort();
     }
 
     dispose() {

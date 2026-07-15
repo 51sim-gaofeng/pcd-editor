@@ -7,9 +7,36 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<div id="topbar">
+  <div id="topbar-menu">
+    <div class="topbar-item">
+      <button class="topbar-btn" onclick="toggleTopbarMenu(this)">File</button>
+      <div class="topbar-dropdown">
+        <div class="topbar-option" onclick="closeTopbarMenus();pickFileNative()">&#128196; Open PCD File&#8230;</div>
+        <div class="topbar-option" onclick="closeTopbarMenus();pickDirNative()">&#128194; Open Directory&#8230;</div>
+        <div class="topbar-option" onclick="closeTopbarMenus();openPlyFromMenu()">&#127875; Open PLY (3DGS)&#8230;</div>
+        <div class="topbar-sep"></div>
+        <div class="topbar-option" onclick="closeTopbarMenus();savePcd()">&#128190; Save PCD&#8230;</div>
+      </div>
+    </div>
+    <div class="topbar-item">
+      <button class="topbar-btn" onclick="toggleTopbarMenu(this)">Help</button>
+      <div class="topbar-dropdown">
+        <div class="topbar-option" onclick="closeTopbarMenus();showHelpModal()">&#128214; User Guide&#8230;</div>
+        <div class="topbar-option" onclick="closeTopbarMenus();showWelcomeModal()">&#9000; Keyboard Shortcuts&#8230;</div>
+        <div class="topbar-option" onclick="closeTopbarMenus();showAboutModal()">&#8505; About&#8230;</div>
+      </div>
+    </div>
+  </div>
+  <div id="topbar-divider"></div>
+  <div id="viewport-toolbar">
+    <button class="vp-tool-btn" data-tool="view" onclick="toggleViewportPanel('view')" title="View settings">&#128065; View</button>
+    <button class="vp-tool-btn" data-tool="edit" onclick="toggleViewportPanel('edit')" title="Edit cloud tools">&#9986; Edit Cloud</button>
+    <button class="vp-tool-btn" data-tool="traj" onclick="toggleViewportPanel('traj')" title="Trajectory tools">&#9998; Trajectory</button>
+  </div>
+</div>
 <div id="main-row">
 <aside id="sidebar">
-  <h1>&#9729; 51sim Sensor Data Viewer</h1>
   <div id="mode-tabs">
     <button class="mode-tab active" id="tab-pcd" onclick="switchMode('pcd')">&#9729; Lidar</button>
     <button class="mode-tab" id="tab-cam" onclick="switchMode('cam')">&#128247; Camera</button>
@@ -29,87 +56,6 @@
       <button class="btn ghost full-w" onclick="refreshList()">&#8634; Refresh List</button>
     </div>
   </details>
-  <details id="sec-view">
-    <summary>&#128065; View</summary>
-    <div class="sec">
-      <!-- Camera -->
-      <div class="grp">
-        <div class="grp-title">Camera</div>
-        <div class="grid4">
-          <button class="view-btn active" id="view-3d"    onclick="setView('3d')">3D</button>
-          <button class="view-btn"        id="view-top"   onclick="setView('top')">Top</button>
-          <button class="view-btn"        id="view-front" onclick="setView('front')">Front</button>
-          <button class="view-btn"        id="view-left"  onclick="setView('left')">Left</button>
-        </div>
-        <button class="btn full-w" id="view-free" onclick="setView('free')" title="Free fly: WASD move, QE up/down, mouse look, Shift boost, Esc exit (F)">&#9992; Free Fly (F)</button>
-        <button class="btn ghost full-w" onclick="resetCamera()">&#x2316; Reset Camera</button>
-      </div>
-
-      <!-- Points -->
-      <div class="grp">
-        <div class="grp-title">Points</div>
-        <div class="row">
-          <span class="lbl">Size</span>
-          <input type="range" id="pt-size" min="0.5" max="5" step="0.5" value="1.5" oninput="updatePointSize(this.value)">
-          <span id="pt-size-val" style="width:26px;text-align:right;color:#cbd5e1">1.5</span>
-        </div>
-        <div class="row">
-          <span class="lbl">Color</span>
-          <select id="color-mode" onchange="applyColorMode(this.value)" style="flex:1">
-            <option value="height">Height (Z)</option>
-            <option value="intensity">Intensity</option>
-            <option value="flat">Flat</option>
-          </select>
-        </div>
-        <div class="row" id="z-lock-row">
-          <button id="z-lock-btn" class="btn ghost" onclick="toggleZLock()" title="Lock/unlock height color range" style="font-size:.62rem;padding:2px 8px">&#128275; Lock Z</button>
-          <span id="z-lock-indicator" style="font-size:.6rem;color:#64748b;flex:1">auto per-frame</span>
-        </div>
-        <div class="row">
-          <span class="lbl">Flip</span>
-          <label><input type="checkbox" id="flip-x" onchange="applyFlip()"> X</label>
-          <label><input type="checkbox" id="flip-y" onchange="applyFlip()"> Y</label>
-          <label><input type="checkbox" id="flip-z" onchange="applyFlip()"> Z</label>
-        </div>
-      </div>
-
-      <!-- Filter Z -->
-      <div class="grp">
-        <div class="grp-title">Filter Z</div>
-        <div class="grid2">
-          <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Min</span><input type="number" id="flt-zmin" step="0.1" value="0" oninput="applyHeightFilter()"></label>
-          <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Max</span><input type="number" id="flt-zmax" step="0.1" value="1" oninput="applyHeightFilter()"></label>
-        </div>
-        <div class="grid3">
-          <button class="seg-btn active" id="flt-keep" onclick="setFilterMode('keep')">Keep</button>
-          <button class="seg-btn"        id="flt-excl" onclick="setFilterMode('exclude')">Exclude</button>
-          <button class="btn ghost" onclick="resetHeightFilter()">Reset</button>
-        </div>
-      </div>
-
-      <!-- Grid -->
-      <div class="grp">
-        <div class="grp-title">Grid</div>
-        <div class="row">
-          <label style="flex:1"><input type="checkbox" id="grid-show" checked onchange="applyGrid()"> Show</label>
-          <label class="row" style="gap:4px;flex:1;justify-content:flex-end">
-            <span style="font-size:.7rem;color:#64748b">Style</span>
-            <select id="grid-style" onchange="applyGrid()" style="flex:0 0 auto">
-              <option value="square">Square</option>
-              <option value="circle">Circle</option>
-            </select>
-          </label>
-        </div>
-        <div class="grid2">
-          <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Size</span><input type="number" id="grid-size" value="200" min="1" max="10000" step="10" onchange="applyGrid()"></label>
-          <label class="row" style="gap:3px" title="cell size (m)"><span style="font-size:.7rem;color:#64748b">Step</span><input type="number" id="grid-step" value="1" min="0.1" max="100" step="0.5" onchange="applyGrid()"></label>
-        </div>
-        <div class="row" style="margin-top:4px">
-          <label class="row" style="gap:3px;flex:1" title="坐标标签间隔 (m)"><span style="font-size:.7rem;color:#64748b">Label</span><input type="number" id="grid-label-step" value="10" min="0.5" max="1000" step="1" onchange="applyGrid()" style="flex:1;min-width:0"><span style="font-size:.65rem;color:#475569">m</span></label>
-        </div>
-      </div>
-    </div>
-  </details>
   <details id="sec-play">
     <summary>&#9654; Playback</summary>
     <div class="sec">
@@ -124,6 +70,13 @@
         <span class="lbl">FPS</span>
         <input type="range" id="play-fps" min="1" max="30" step="1" value="10" oninput="playSetFps(parseInt(this.value))" style="flex:1;accent-color:#34d399">
         <span id="play-fps-val" style="width:26px;text-align:right;color:#cbd5e1">10</span>
+      </div>
+      <div class="row" style="gap:6px">
+        <span class="lbl" style="width:auto;white-space:nowrap">Max pts</span>
+        <input type="range" id="pcd-max-pts" min="10000" max="1000000" step="10000" value="300000"
+               style="flex:1;accent-color:#34d399"
+               oninput="pcdSetMaxPointsFromUI(this.value)">
+        <span id="pcd-max-pts-val" style="font-size:.65rem;color:#94a3b8;min-width:30px;text-align:right">300k</span>
       </div>
       <div style="font-size:.65rem;color:#334155;text-align:center">←→ step · Space play/pause</div>
     </div>
@@ -151,13 +104,14 @@
         <button class="btn ghost" onclick="streamingRefreshReceiverConfig()">Refresh</button>
       </div>
       <div id="streaming-bind-status" style="font-size:.62rem;color:#64748b;text-align:center;margin-top:4px">bind: 127.0.0.1:6699 | info: 7788</div>
+      <div id="streaming-diag-status" style="font-size:.6rem;color:#475569;text-align:center;margin-top:2px;line-height:1.5"></div>
       <hr style="border-color:#334155;margin:6px 0">
       <div class="row" style="justify-content:center;margin-top:4px;gap:6px;align-items:center">
         <span style="font-size:.65rem;color:#64748b;white-space:nowrap">Max pts</span>
-         <input type="range" id="streaming-max-pts" min="10000" max="1000000" step="10000" value="1000000"
+         <input type="range" id="streaming-max-pts" min="10000" max="1000000" step="10000" value="60000"
                style="flex:1;accent-color:#a78bfa"
                oninput="streamingSetMaxPointsFromUI(this.value)">
-         <span id="streaming-max-pts-val" style="font-size:.65rem;color:#94a3b8;min-width:30px">1000k</span>
+         <span id="streaming-max-pts-val" style="font-size:.65rem;color:#94a3b8;min-width:30px">60k</span>
       </div>
       <div class="row" style="justify-content:center;margin-top:4px;gap:6px;align-items:center">
         <span style="font-size:.65rem;color:#64748b;white-space:nowrap">Render FPS</span>
@@ -213,64 +167,6 @@
       </div>
     </div>
   </details>
-  <details id="sec-traj">
-    <summary>&#9998; Trajectory</summary>
-    <div class="sec">
-      <div class="grid2">
-        <button class="btn" id="btn-pick" onclick="togglePick()" title="Inspect point">&#128269; Pick</button>
-        <button class="btn" id="btn-draw" onclick="toggleDraw()" title="Place waypoints">&#9998; Draw</button>
-      </div>
-      <div class="row">
-        <span class="lbl">Z def</span>
-        <input type="number" id="wp-z" step="0.01" value="0.00" style="flex:1">
-        <span id="traj-count" style="font-size:.7rem;color:#94a3b8;width:50px;text-align:right">0 pts</span>
-      </div>
-      <div class="grid2">
-        <button class="btn ghost" onclick="trajUndo()">&#x21A9; Undo</button>
-        <button class="btn ghost" onclick="trajClear()">&#10005; Clear</button>
-      </div>
-      <div class="grp">
-        <div class="grp-title">I/O</div>
-        <div class="grid2">
-          <button class="btn" onclick="trajExport()">&#8595; Export</button>
-          <label class="btn" style="cursor:pointer;text-align:center">&#8593; Import<input type="file" id="traj-import" accept=".json" style="display:none" onchange="trajImport(this)"></label>
-        </div>
-        <div class="grid2">
-          <button class="btn" onclick="trajSaveServer()">&#128190; Save</button>
-          <button class="btn ghost" onclick="refreshTrajList()">&#8634; Reload</button>
-        </div>
-        <select class="full" id="traj-server-list" onchange="trajLoadServer(this.value)">
-          <option value="">&#8212; server trajs &#8212;</option>
-        </select>
-      </div>
-    </div>
-  </details>
-  <details id="sec-edit">
-    <summary>&#9986; Edit Cloud</summary>
-    <div class="sec">
-      <div class="grid2">
-        <button class="btn" id="btn-edit-pick" onclick="togglePick()" title="Inspect point (double-click viewer to toggle)">&#128269; Pick</button>
-        <span></span>
-      </div>
-      <div class="grid2">
-        <button class="btn" id="btn-lasso"  onclick="toggleLasso()"  title="Freehand select region">&#9986; Lasso</button>
-        <button class="btn" id="btn-eraser" onclick="toggleEraser()" title="Brush select points">&#9711; Eraser</button>
-      </div>
-      <div class="row">
-        <span class="lbl">Radius</span>
-        <input type="range" id="eraser-r" min="5" max="80" step="5" value="20" oninput="updateEraserRadius(this.value)">
-        <span id="eraser-r-val" style="width:26px;text-align:right;color:#cbd5e1">20</span>
-      </div>
-      <div class="grid2">
-        <button class="btn danger" onclick="deleteSelected()">&#10005; Delete <span id="sel-count"></span></button>
-        <button class="btn ghost"  id="edit-undo-btn" style="display:none" onclick="undoDelete()">&#x21A9; Undo</button>
-      </div>
-      <div class="grid2">
-        <button class="btn ghost" onclick="clearSelection()">Deselect</button>
-        <button class="btn"       onclick="savePcd()">&#128190; Save PCD</button>
-      </div>
-    </div>
-  </details>
   <details id="sec-gs" open style="display:none">
     <summary>&#127875; Gaussian Splatting</summary>
     <div class="sec">
@@ -288,6 +184,21 @@
           <option value="2">L2</option>
           <option value="3">L3</option>
         </select>
+      </div>
+      <div class="row" style="gap:6px;margin-top:6px">
+        <span class="lbl" style="width:auto;white-space:nowrap">Max pts</span>
+        <input type="range" id="gs-max-pts" min="500000" max="20000000" step="100000" value="20000000"
+               style="flex:1;accent-color:#34d399"
+               oninput="gsSetMaxPointsFromUI(this.value)">
+        <span id="gs-max-pts-val" style="font-size:.65rem;color:#94a3b8;min-width:36px;text-align:right">20.0M</span>
+      </div>
+      <div style="font-size:.6rem;color:#334155">若加载后画面空白/控制台报 glTexStorage2D 错误，说明超出显卡纹理容量，调低后重新加载该文件</div>
+      <div class="row" style="justify-content:center;margin-top:4px;gap:6px;align-items:center">
+        <span style="font-size:.65rem;color:#64748b;white-space:nowrap">Render FPS</span>
+        <input type="range" id="gs-render-fps" min="1" max="60" step="1" value="30"
+               style="flex:1;accent-color:#fbbf24"
+               oninput="gsSetRenderFpsFromUI(this.value)">
+        <span id="gs-render-fps-val" style="font-size:.65rem;color:#94a3b8;min-width:20px">30</span>
       </div>
       <div class="grp" style="margin-top:6px">
         <div class="grp-title">Model Rotation (deg)</div>
@@ -357,6 +268,144 @@
 </aside>
 <div id="resize-handle"><button id="sidebar-toggle" title="Toggle sidebar (B)" onclick="toggleSidebar()">&#9664;</button></div>
   <div id="canvas-wrap">
+    <div id="viewport-panel">
+      <div class="vp-panel-bar">
+        <span id="vp-panel-title">View</span>
+        <button class="vp-panel-close" onclick="closeViewportPanel()" title="Collapse">&#10005;</button>
+      </div>
+      <div class="vp-panel-body">
+        <div class="vp-page" id="sec-view">
+          <!-- Camera -->
+          <div class="grp">
+            <div class="grp-title">Camera</div>
+            <div class="grid4">
+              <button class="view-btn active" id="view-3d"    onclick="setView('3d')">3D</button>
+              <button class="view-btn"        id="view-top"   onclick="setView('top')">Top</button>
+              <button class="view-btn"        id="view-front" onclick="setView('front')">Front</button>
+              <button class="view-btn"        id="view-left"  onclick="setView('left')">Left</button>
+            </div>
+            <button class="btn full-w" id="view-free" onclick="setView('free')" title="Free fly: WASD move, QE up/down, mouse look, Shift boost, Esc exit (F)">&#9992; Free Fly (F)</button>
+            <button class="btn ghost full-w" onclick="resetCamera()">&#x2316; Reset Camera</button>
+          </div>
+
+          <!-- Points -->
+          <div class="grp">
+            <div class="grp-title">Points</div>
+            <div class="row">
+              <span class="lbl">Size</span>
+              <input type="range" id="pt-size" min="0.5" max="5" step="0.5" value="1.5" oninput="updatePointSize(this.value)">
+              <span id="pt-size-val" style="width:26px;text-align:right;color:#cbd5e1">1.5</span>
+            </div>
+            <div class="row">
+              <span class="lbl">Color</span>
+              <select id="color-mode" onchange="applyColorMode(this.value)" style="flex:1">
+                <option value="height">Height (Z)</option>
+                <option value="intensity">Intensity</option>
+                <option value="flat">Flat</option>
+              </select>
+            </div>
+            <div class="row" id="z-lock-row">
+              <button id="z-lock-btn" class="btn ghost" onclick="toggleZLock()" title="Lock/unlock height color range" style="font-size:.62rem;padding:2px 8px">&#128275; Lock Z</button>
+              <span id="z-lock-indicator" style="font-size:.6rem;color:#64748b;flex:1">auto per-frame</span>
+            </div>
+            <div class="row">
+              <span class="lbl">Flip</span>
+              <label><input type="checkbox" id="flip-x" onchange="applyFlip()"> X</label>
+              <label><input type="checkbox" id="flip-y" onchange="applyFlip()"> Y</label>
+              <label><input type="checkbox" id="flip-z" onchange="applyFlip()"> Z</label>
+            </div>
+          </div>
+
+          <!-- Filter Z -->
+          <div class="grp">
+            <div class="grp-title">Filter Z</div>
+            <div class="grid2">
+              <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Min</span><input type="number" id="flt-zmin" step="0.1" value="0" oninput="applyHeightFilter()"></label>
+              <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Max</span><input type="number" id="flt-zmax" step="0.1" value="1" oninput="applyHeightFilter()"></label>
+            </div>
+            <div class="grid3">
+              <button class="seg-btn active" id="flt-keep" onclick="setFilterMode('keep')">Keep</button>
+              <button class="seg-btn"        id="flt-excl" onclick="setFilterMode('exclude')">Exclude</button>
+              <button class="btn ghost" onclick="resetHeightFilter()">Reset</button>
+            </div>
+          </div>
+
+          <!-- Grid -->
+          <div class="grp">
+            <div class="grp-title">Grid</div>
+            <div class="row">
+              <label style="flex:1"><input type="checkbox" id="grid-show" checked onchange="applyGrid()"> Show</label>
+              <label class="row" style="gap:4px;flex:1;justify-content:flex-end">
+                <span style="font-size:.7rem;color:#64748b">Style</span>
+                <select id="grid-style" onchange="applyGrid()" style="flex:0 0 auto">
+                  <option value="square">Square</option>
+                  <option value="circle">Circle</option>
+                </select>
+              </label>
+            </div>
+            <div class="grid2">
+              <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Size</span><input type="number" id="grid-size" value="200" min="1" max="10000" step="10" onchange="applyGrid()"></label>
+              <label class="row" style="gap:3px" title="cell size (m)"><span style="font-size:.7rem;color:#64748b">Step</span><input type="number" id="grid-step" value="1" min="0.1" max="100" step="0.5" onchange="applyGrid()"></label>
+            </div>
+            <div class="row" style="margin-top:4px">
+              <label class="row" style="gap:3px;flex:1" title="坐标标签间隔 (m)"><span style="font-size:.7rem;color:#64748b">Label</span><input type="number" id="grid-label-step" value="10" min="0.5" max="1000" step="1" onchange="applyGrid()" style="flex:1;min-width:0"><span style="font-size:.65rem;color:#475569">m</span></label>
+            </div>
+          </div>
+        </div>
+        <div class="vp-page" id="sec-traj" style="display:none">
+          <div class="grid2">
+            <button class="btn" id="btn-pick" onclick="togglePick()" title="Inspect point">&#128269; Pick</button>
+            <button class="btn" id="btn-draw" onclick="toggleDraw()" title="Place waypoints">&#9998; Draw</button>
+          </div>
+          <div class="row">
+            <span class="lbl">Z def</span>
+            <input type="number" id="wp-z" step="0.01" value="0.00" style="flex:1">
+            <span id="traj-count" style="font-size:.7rem;color:#94a3b8;width:50px;text-align:right">0 pts</span>
+          </div>
+          <div class="grid2">
+            <button class="btn ghost" onclick="trajUndo()">&#x21A9; Undo</button>
+            <button class="btn ghost" onclick="trajClear()">&#10005; Clear</button>
+          </div>
+          <div class="grp">
+            <div class="grp-title">I/O</div>
+            <div class="grid2">
+              <button class="btn" onclick="trajExport()">&#8595; Export</button>
+              <label class="btn" style="cursor:pointer;text-align:center">&#8593; Import<input type="file" id="traj-import" accept=".json" style="display:none" onchange="trajImport(this)"></label>
+            </div>
+            <div class="grid2">
+              <button class="btn" onclick="trajSaveServer()">&#128190; Save</button>
+              <button class="btn ghost" onclick="refreshTrajList()">&#8634; Reload</button>
+            </div>
+            <select class="full" id="traj-server-list" onchange="trajLoadServer(this.value)">
+              <option value="">&#8212; server trajs &#8212;</option>
+            </select>
+          </div>
+        </div>
+        <div class="vp-page" id="sec-edit" style="display:none">
+          <div class="grid2">
+            <button class="btn" id="btn-edit-pick" onclick="togglePick()" title="Inspect point (double-click viewer to toggle)">&#128269; Pick</button>
+            <span></span>
+          </div>
+          <div class="grid2">
+            <button class="btn" id="btn-lasso"  onclick="toggleLasso()"  title="Freehand select region">&#9986; Lasso</button>
+            <button class="btn" id="btn-eraser" onclick="toggleEraser()" title="Brush select points">&#9711; Eraser</button>
+          </div>
+          <div class="row">
+            <span class="lbl">Radius</span>
+            <input type="range" id="eraser-r" min="5" max="80" step="5" value="20" oninput="updateEraserRadius(this.value)">
+            <span id="eraser-r-val" style="width:26px;text-align:right;color:#cbd5e1">20</span>
+          </div>
+          <div class="grid2">
+            <button class="btn danger" onclick="deleteSelected()">&#10005; Delete <span id="sel-count"></span></button>
+            <button class="btn ghost"  id="edit-undo-btn" style="display:none" onclick="undoDelete()">&#x21A9; Undo</button>
+          </div>
+          <div class="grid2">
+            <button class="btn ghost" onclick="clearSelection()">Deselect</button>
+            <button class="btn"       onclick="savePcd()">&#128190; Save PCD</button>
+          </div>
+        </div>
+      </div>
+    </div>
     <div id="camera-wrap">
       <div id="cam-no-signal" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;pointer-events:none">
         <span style="font-size:2.5rem">&#128247;</span>
@@ -420,6 +469,108 @@
       <button class="btn ghost" style="padding:3px 9px" title="在资源管理器中打开当前目录" onclick="openInExplorer()">&#128221; Explorer</button>
     </div>
     <div id="dir-list"></div>
+  </div>
+</div>
+<div id="about-modal-overlay" onclick="if(event.target===this)closeAboutModal()">
+  <div id="about-modal">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <h2>&#8505; About</h2>
+      <button class="btn ghost" onclick="closeAboutModal()" style="padding:2px 8px;font-size:.8rem">&#10005;</button>
+    </div>
+    <div id="about-body" style="font-size:.78rem;color:#cbd5e1;line-height:2">loading&#8230;</div>
+    <div style="display:flex;justify-content:flex-end">
+      <button class="btn ghost" onclick="closeAboutModal()">Close</button>
+    </div>
+  </div>
+</div>
+<div id="help-modal-overlay" onclick="if(event.target===this)closeHelpModal()">
+  <div id="help-modal">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <h2>&#128214; User Guide</h2>
+      <button class="btn ghost" onclick="closeHelpModal()" style="padding:2px 8px;font-size:.8rem">&#10005;</button>
+    </div>
+    <div id="help-tabs">
+      <button class="help-tab active" id="help-tab-lidar"  onclick="helpShowTab('lidar')">&#9729; Lidar</button>
+      <button class="help-tab"        id="help-tab-camera" onclick="helpShowTab('camera')">&#128247; Camera</button>
+      <button class="help-tab"        id="help-tab-gs"     onclick="helpShowTab('gs')">&#127875; 3DGS</button>
+    </div>
+    <div id="help-body">
+      <div class="help-page" id="help-page-lidar">
+        <h3>Static PCD files</h3>
+        <p>Use <b>File &#8594; Open PCD File&#8230;</b> or <b>Open Directory&#8230;</b> (also available in the sidebar <b>File</b> section) to load <code>.pcd</code> files. ASCII, binary, and <code>binary_compressed</code> formats are all supported, with disk caching for fast reloads.</p>
+        <ul>
+          <li><b>Playback</b>: seek bar, FPS slider, <span class="wm-key" style="min-width:auto">&#8592;/&#8594;</span> step, <span class="wm-key" style="min-width:auto">Space</span> play/pause.</li>
+          <li><b>View</b>: 3D / Top / Front / Left presets, Free-fly camera (<span class="wm-key" style="min-width:auto">F</span>), point size, color mode (height / intensity / flat), axis flip.</li>
+          <li><b>Filter Z</b>: keep or exclude a height range.</li>
+          <li><b>Grid</b>: square or circular ground grid with configurable size, step, and coordinate labels.</li>
+          <li><b>Edit Cloud</b>: Pick / Lasso / Eraser to select points, then Delete, Undo, or <b>Save PCD</b>.</li>
+          <li><b>Trajectory</b>: Draw waypoints on the cloud, then Export / Import / Save to server.</li>
+        </ul>
+        <h3>Streaming Lidar Receiver</h3>
+        <p>Real-time Velodyne-style MSOP/DIFOP UDP ingestion with multi-threaded decode (separate network I/O and decode threads). Set the bind IP/port and DIFOP info port, then click <b>Streaming Live</b> to start. Use <b>Max pts</b> and <b>Render FPS</b> sliders to trade off density vs. smoothness; <span class="wm-key" style="min-width:auto">Space</span> pauses rendering without stopping reception.</p>
+        <h3>DDS Live</h3>
+        <p>Live UDP point cloud over a compact binary protocol, pushed to the browser via WebSocket. Auto-detects unicast / broadcast / multicast based on the IP you enter. Adaptive max-points budget automatically downsamples under load and ramps back up when headroom returns. Tri-state control: <b>DDS Live / Pause / Stop</b>.</p>
+      </div>
+      <div class="help-page" id="help-page-camera" style="display:none">
+        <h3>Camera Receiver (GVSP/JPEG over UDP)</h3>
+        <p>Switch to the <b>&#128247; Camera</b> tab, set <b>Bind IP</b> and <b>Port</b>, then click <b>Connect</b> to start receiving JPEG frames over UDP.</p>
+        <ul>
+          <li>Frames are pulled via long-poll (<code>/api/camera_frame</code>) using an incrementing frame id, so only new frames are transferred.</li>
+          <li><b>Show FPS badge</b> toggles an on-screen overlay with the live receive rate.</li>
+          <li>Status text shows the current receiver state, resolution, and latest frame metadata.</li>
+          <li>Camera mode is mutually exclusive with DDS Live to avoid receiver/resource conflicts &#8212; switching to Camera stops any active DDS session.</li>
+        </ul>
+      </div>
+      <div class="help-page" id="help-page-gs" style="display:none">
+        <h3>Gaussian Splatting (3DGS / PLY)</h3>
+        <p>Switch to the <b>&#127875; 3DGS</b> tab. Use <b>File &#8594; Open PLY (3DGS)&#8230;</b> or pick a file from the <b>GS File</b> dropdown to load a <code>.ply</code> scene.</p>
+        <ul>
+          <li><b>SH Level</b>: switch spherical-harmonics degree (0&#8211;3) to balance quality vs. performance.</li>
+          <li><b>Model Rotation</b>: adjust Roll / Pitch / Yaw in degrees; changes apply immediately. Double-click inside the viewport to set the rotation pivot for more natural interactive alignment.</li>
+          <li><b>Color Adjust</b>: tune Brightness / Contrast / Saturation / Temperature / Hue in real time, with a one-click Reset.</li>
+          <li>The status area under the panel shows loading state, load time, splat count, and live FPS.</li>
+        </ul>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:flex-end">
+      <button class="btn ghost" onclick="closeHelpModal()">Close</button>
+    </div>
+  </div>
+</div>
+<div id="welcome-modal-overlay" onclick="if(event.target===this)closeWelcomeModal()">
+  <div id="welcome-modal">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <h2>&#9729; Welcome to 51sim Sensor Data Viewer</h2>
+      <button class="btn ghost" onclick="closeWelcomeModal()" style="padding:2px 8px;font-size:.8rem">&#10005;</button>
+    </div>
+    <div id="welcome-shortcuts">
+      <div style="font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin:2px 0">Keyboard</div>
+      <div class="wm-row"><span class="wm-key">Space</span><span>Play / Pause (playback or live streaming)</span></div>
+      <div class="wm-row"><span class="wm-key">&#8592; / &#8594;</span><span>Previous / Next frame (playback)</span></div>
+      <div class="wm-row"><span class="wm-key">P</span><span>Switch to 3D view</span></div>
+      <div class="wm-row"><span class="wm-key">T</span><span>Switch to Top view</span></div>
+      <div class="wm-row"><span class="wm-key">F</span><span>Toggle Free-fly camera</span></div>
+      <div class="wm-row"><span class="wm-key">B</span><span>Toggle sidebar</span></div>
+      <div class="wm-row"><span class="wm-key">L</span><span>Toggle log panel</span></div>
+      <div class="wm-row"><span class="wm-key">Esc</span><span>Exit current mode (pick / draw / lasso / eraser / free-fly)</span></div>
+      <div style="font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin:8px 0 2px">Mouse (orbit view)</div>
+      <div class="wm-row"><span class="wm-key">L-Drag</span><span>Orbit / rotate view</span></div>
+      <div class="wm-row"><span class="wm-key">R-Drag</span><span>Pan view</span></div>
+      <div class="wm-row"><span class="wm-key">Wheel</span><span>Zoom in / out</span></div>
+      <div style="font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin:8px 0 2px">Free-fly camera (F) &#8212; UE-style</div>
+      <div class="wm-row"><span class="wm-key">Hold RMB</span><span>Look around (mouse look)</span></div>
+      <div class="wm-row"><span class="wm-key">W A S D</span><span>Move forward / left / back / right</span></div>
+      <div class="wm-row"><span class="wm-key">Q / E</span><span>Move down / up</span></div>
+      <div class="wm-row"><span class="wm-key">Wheel</span><span>Adjust move speed</span></div>
+      <div class="wm-row"><span class="wm-key">Shift</span><span>Boost speed (hold)</span></div>
+      <div class="wm-row"><span class="wm-key">Esc / F</span><span>Exit free-fly mode</span></div>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:.72rem;color:#94a3b8;cursor:pointer;margin-top:6px">
+      <input type="checkbox" id="welcome-dont-show" onchange="saveWelcomePref()"> Don't show this on startup
+    </label>
+    <div style="display:flex;justify-content:flex-end">
+      <button class="btn" onclick="closeWelcomeModal()">Got it</button>
+    </div>
   </div>
 </div>
 <script type="importmap">

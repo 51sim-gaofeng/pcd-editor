@@ -132,6 +132,21 @@ function _playGoto(idx){
 function playStep(d){if(!_playRunning)_playGoto(_playCur+d);}
 function playSeek(i){_playCur=Math.max(0,Math.min(_playTotal-1,i));if(!_playRunning)_playGoto(_playCur);}
 function playSetFps(v){_playFps=v;document.getElementById('play-fps-val').textContent=v;}
+function pcdSetMaxPointsFromUI(v){
+  const n=Math.max(10000,Math.min(1000000,Math.round((parseInt(v,10)||300000)/1000)*1000));
+  const el=document.getElementById('pcd-max-pts');if(el&&parseInt(el.value,10)!==n)el.value=n;
+  const val=document.getElementById('pcd-max-pts-val');if(val)val.textContent=Math.round(n/1000)+'k';
+  fetch('/api/pcd_set_max_points?n='+n).catch(()=>{});
+  // Backend cache is keyed by max_pts, but the browser-side frame cache isn't — clear it so
+  // subsequent loads (including the current playback loop's next frame) re-fetch fresh data
+  // instead of serving a stale binary from before the change.
+  _frameCache.clear();_fetchPromises.clear();
+  setStatus('PCD max points: '+n.toLocaleString(),'ok');
+  if(!_playRunning){
+    const sel=document.getElementById('file-select');
+    if(sel&&sel.value)loadFile(sel.value);
+  }
+}
 async function _playLoopStep(gen){
   if(!_playRunning||gen!==_playGen)return;
   const f=_playFiles[_playCur];
@@ -200,7 +215,9 @@ function _ddsFpsTick(){
 }
 function _ddsRoundPts(v){return Math.max(_ddsAutoMinPoints,Math.min(_ddsAutoMaxPoints,Math.round(v/1000)*1000));}
 function _ddsSetMaxPoints(n,silent){
-  const v=_ddsRoundPts(parseInt(n,10)||_ddsCurrentMaxPoints);
+  let raw=Math.max(10000,Math.min(1000000,parseInt(n,10)||_ddsCurrentMaxPoints));
+  if(!silent)_ddsAutoMaxPoints=raw;   // user-driven change becomes the new adaptive ceiling
+  const v=_ddsRoundPts(raw);
   _ddsCurrentMaxPoints=v;
   const el=document.getElementById('dds-max-pts');if(el&&parseInt(el.value,10)!==v)el.value=v;
   const val=document.getElementById('dds-max-pts-val');if(val)val.textContent=Math.round(v/1000)+'k';
@@ -468,6 +485,7 @@ function _smFpsTick(){
 function _smSetMaxPoints(n,silent){
   const v=Math.max(10000,Math.min(1000000,Math.round((parseInt(n,10)||60000)/1000)*1000));
   _smCurrentMaxPoints=v;
+  if(!silent)_smAutoMaxPoints=v;   // user-driven change becomes the new adaptive ceiling
   const el=document.getElementById('streaming-max-pts');if(el&&parseInt(el.value,10)!==v)el.value=v;
   const val=document.getElementById('streaming-max-pts-val');if(val)val.textContent=Math.round(v/1000)+'k';
   fetch('/api/streaming_set_max_points?n='+v).catch(()=>{});
@@ -556,6 +574,28 @@ async function streamingRefreshReceiverConfig(){
   }catch(e){
     const st=document.getElementById('streaming-bind-status');if(st)st.textContent='bind: read failed';
   }
+  _smRefreshDiag();
+}
+// Pull the server-side pipeline diagnostics (network scan rate, packet loss,
+// decode-queue drops, decode/store timing) so a fps shortfall can be traced
+// to the layer actually responsible instead of guessed at.
+async function _smRefreshDiag(){
+  const el=document.getElementById('streaming-diag-status');
+  if(!el)return;
+  try{
+    const rs=await fetch('/api/streaming_status');
+    const s=await rs.json();
+    const d=s.diag||{};
+    if(!d.updated_at){el.textContent='diag: waiting for data…';return;}
+    const lossPct=d.avg_scan_pkts>0?((d.missing_pkts_per_sec/(d.pkt_hz||1))*100):0;
+    const lossWarn=d.missing_pkts_per_sec>0.5?' \u26a0':'';
+    const dropWarn=d.queue_drop_per_sec>0.5?' \u26a0':'';
+    el.innerHTML=
+      'net: '+d.scan_hz.toFixed(1)+' scan/s ('+d.pkt_hz.toFixed(0)+' pkt/s, avg '+d.avg_scan_pkts.toFixed(0)+' pkt/scan)'
+      +'<br>loss: '+d.missing_pkts_per_sec.toFixed(1)+' pkt/s'+lossWarn
+      +' · queue: depth '+d.queue_depth+', drop '+d.queue_drop_per_sec.toFixed(1)+'/s'+dropWarn
+      +'<br>decode: '+d.decode_hz.toFixed(1)+'/s, '+d.decode_avg_ms.toFixed(1)+'ms decode + '+d.store_avg_ms.toFixed(1)+'ms store';
+  }catch(e){/* ignore transient poll errors */}
 }
 async function streamingApplyReceiverConfig(){
   const ip=(document.getElementById('streaming-bind-ip')?.value||'127.0.0.1').trim()||'127.0.0.1';
@@ -639,7 +679,7 @@ async function streamingToggle(){
   document.getElementById('streaming-status').textContent='connecting\u2026';
   document.getElementById('streaming-status').style.color='#facc15';
   streamingSetRenderFpsFromUI(document.getElementById('streaming-render-fps')?.value||'10');
-  _smSetMaxPoints(document.getElementById('streaming-max-pts')?.value||1000000,true);
+  _smSetMaxPoints(document.getElementById('streaming-max-pts')?.value||60000,true);
   setStatus('Streaming: waiting for frames\u2026','loading');
   requestAnimationFrame(_smRenderTick);
   _smStartPoll();
@@ -774,8 +814,22 @@ async function refreshTrajList(){const r=await fetch('/api/trajectory');const d=
 async function trajLoadServer(fname){if(!fname)return;const r=await fetch('/api/trajectory?file='+encodeURIComponent(fname));const d=await r.json();if(d.error){setStatus('Load error: '+d.error,'err');return;}const pts=Array.isArray(d)?d:d.waypoints;if(!pts){setStatus('No waypoints in file','err');return;}window._three.loadWaypoints(pts);setStatus('Loaded: '+fname,'ok');}
 function wpDelete(idx){window._three.deleteWaypointAt(idx);}function hideWpPopup(){document.getElementById('wp-popup').style.display='none';}
 let _fm='keep';function setFilterMode(m){_fm=m;document.getElementById('flt-keep').classList.toggle('active',m==='keep');document.getElementById('flt-excl').classList.toggle('active',m==='exclude');applyHeightFilter();}
-function applyHeightFilter(){if(!window._three||!window._three.hasCloud())return;const zMin=parseFloat(document.getElementById('flt-zmin').value),zMax=parseFloat(document.getElementById('flt-zmax').value);if(isNaN(zMin)||isNaN(zMax)||zMin>=zMax)return;window._three.applyFilter(zMin,zMax,_fm);setStatus('Filter: '+_fm+' ['+zMin.toFixed(2)+', '+zMax.toFixed(2)+']','ok');}
-function resetHeightFilter(){window._three.resetFilter();setStatus('Filter reset','ok');}
+function applyHeightFilter(){
+  const zMin=parseFloat(document.getElementById('flt-zmin').value),zMax=parseFloat(document.getElementById('flt-zmax').value);
+  if(isNaN(zMin)||isNaN(zMax)||zMin>=zMax)return;
+  let applied=false;
+  if(window._three?.hasCloud?.()){window._three.applyFilter(zMin,zMax,_fm);applied=true;}
+  if((window._gaussian?.getSplatCount?.()||0)>0){window._gaussian.applyFilter(zMin,zMax,_fm);applied=true;}
+  if(!applied)return;
+  setStatus('Filter: '+_fm+' ['+zMin.toFixed(2)+', '+zMax.toFixed(2)+']','ok');
+}
+function resetHeightFilter(){
+  let applied=false;
+  if(window._three?.hasCloud?.()){window._three.resetFilter();applied=true;}
+  if((window._gaussian?.getSplatCount?.()||0)>0){window._gaussian.resetFilter();applied=true;}
+  if(!applied)return;
+  setStatus('Filter reset','ok');
+}
 function setView(p){window._three.setView(p);['3d','top','front','left'].forEach(v=>{const b=document.getElementById('view-'+v);if(b)b.classList.toggle('active',v===p);});const fb=document.getElementById('view-free');if(fb)fb.classList.toggle('active',p==='free');}
 // keyboard shortcuts: p/P 鈫?3D, t/T 鈫?Top
 document.addEventListener('keydown',e=>{
@@ -883,9 +937,9 @@ async function loadFileAbs(absPath){
     document.getElementById('info').textContent=npoints.toLocaleString()+' pts'+(original_count!==npoints?' (\u2193'+original_count.toLocaleString()+')':'')+'  \u00b7  '+(fname||absPath.split(/[\\/]/).pop());setStatus('OK','ok');
   }catch(e){setStatus('fetch error','err');}
 }
-refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();
+refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();_initWelcomeOnStartup();
 // 鈹€鈹€ Camera mode (GVSP UDP receiver) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-const _CAM_PCD_SECTIONS=['sec-file','sec-view','sec-play','sec-streaming','sec-dds','sec-traj','sec-edit'];
+const _CAM_PCD_SECTIONS=['sec-file','sec-play','sec-streaming','sec-dds'];
 let _camMode=false,_camActive=false,_camLastId=-1;
 let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0,_camLastBuf=null;
 let _camShowFps=true;
@@ -1004,7 +1058,15 @@ function switchMode(mode){
   document.getElementById('tab-cam').classList.toggle('active',toCam);
   const tabGs=document.getElementById('tab-gs');if(tabGs)tabGs.classList.toggle('active',toGs);
   _CAM_PCD_SECTIONS.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toGs)?'none':'';});
-  if((toCam||toGs)&&_smActive)streamingStop();
+  // View/Edit Cloud/Trajectory toolbar also works in 3DGS mode (same camera/scene),
+  // just not in Camera mode (no 3D scene there at all).
+  const vpToolbar=document.getElementById('viewport-toolbar');if(vpToolbar)vpToolbar.style.display=toCam?'none':'';
+  if(toCam)closeViewportPanel();
+  if(toCam||toGs){
+    _stopPlay();               // stop PCD playback loop so it can't keep re-adding the cloud
+    if(_smActive)streamingStop();
+    if(_ddsActive)ddsStop();
+  }
   const secCam=document.getElementById('sec-camera');if(secCam)secCam.style.display=toCam?'':'none';
   const secGs=document.getElementById('sec-gs');if(secGs)secGs.style.display=toGs?'':'none';
   const camWrap=document.getElementById('camera-wrap');if(camWrap)camWrap.classList.toggle('active',toCam);
@@ -1021,8 +1083,6 @@ function switchMode(mode){
     const btnC=document.getElementById('btn-cam-connect');if(btnC){btnC.innerHTML='&#128279; Connect';btnC.style.background='';}
     const stEl=document.getElementById('cam-status');if(stEl){stEl.textContent='off';stEl.style.color='';}
     const bsEl=document.getElementById('cam-bind-status');if(bsEl)bsEl.textContent='bind: 127.0.0.1:'+(document.getElementById('cam-port')?.value||'9870');
-  }else{
-    if(_ddsActive)ddsStop();
   }
   if(toGs){
     window._three?.clearCloud?.();
@@ -1033,6 +1093,25 @@ function switchMode(mode){
     window._three?.setSceneAxesVisible?.(true);
   }
   if(!toGs&&window._gaussian){window._gaussian.dispose();}
+}
+// ── Viewport toolbar (View / Trajectory / Edit Cloud floating panel) ───────
+const _VP_TITLES={view:'View',traj:'Trajectory',edit:'Edit Cloud'};
+let _vpActiveTab=null;
+function toggleViewportPanel(tab){
+  const panel=document.getElementById('viewport-panel');if(!panel)return;
+  if(panel.classList.contains('open')&&_vpActiveTab===tab){closeViewportPanel();return;}
+  _vpActiveTab=tab;
+  ['view','traj','edit'].forEach(t=>{
+    const page=document.getElementById('sec-'+t);if(page)page.style.display=(t===tab)?'':'none';
+    const btn=document.querySelector('.vp-tool-btn[data-tool="'+t+'"]');if(btn)btn.classList.toggle('active',t===tab);
+  });
+  const title=document.getElementById('vp-panel-title');if(title)title.textContent=_VP_TITLES[tab]||'';
+  panel.classList.add('open');
+}
+function closeViewportPanel(){
+  const panel=document.getElementById('viewport-panel');if(panel)panel.classList.remove('open');
+  document.querySelectorAll('.vp-tool-btn').forEach(b=>b.classList.remove('active'));
+  _vpActiveTab=null;
 }
 async function camConnect(){
   if(_camActive){
@@ -1093,7 +1172,7 @@ async function _camPollLoop(){
   }).observe(wrap);
 })();
 
-// 鈹€鈹€ Gaussian Splatting UI 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Gaussian Splatting UI ────────────────────────────────────────────────────
 function setGsOverlay(mode, line1, line2){
   const ov=document.getElementById('gs-overlay');
   if(!ov)return;
@@ -1128,8 +1207,15 @@ async function refreshGsList(){
 }
 async function onGsFileSelect(path){
   if(!path)return;
-  setGsOverlay('loading','Loading 3DGS scene...','Parsing '+path);
-  setStatus('Loading '+path+'\u2026','loading');
+  await _gsLoadFromUrl('/api/ply?file='+encodeURIComponent(path), path);
+}
+async function onGsFileSelectAbs(path){
+  if(!path)return;
+  await _gsLoadFromUrl('/api/ply_abs?file='+encodeURIComponent(path), path);
+}
+async function _gsLoadFromUrl(url, label){
+  setGsOverlay('loading','Loading 3DGS scene...','Parsing '+label);
+  setStatus('Loading '+label+'\u2026','loading');
   const infoEl=document.getElementById('gs-info');
   const loadEl=document.getElementById('gs-load-ms');
   const loadingEl=document.getElementById('gs-loading');
@@ -1138,19 +1224,27 @@ async function onGsFileSelect(path){
   if(loadingEl)loadingEl.style.display='block';
   try{
     const shDegree=Math.max(0,Math.min(3,parseInt(document.getElementById('gs-sh-level')?.value||'0',10)||0));
+    const maxSplats=Math.max(500000,Math.min(20000000,parseInt(document.getElementById('gs-max-pts')?.value||'20000000',10)||20000000));
     const roll = parseFloat(document.getElementById('gs-roll')?.value || '0') || 0;
     const pitch = parseFloat(document.getElementById('gs-pitch')?.value || '0') || 0;
     const yaw = parseFloat(document.getElementById('gs-yaw')?.value || '0') || 0;
-    const res=await window._gaussian.load('/api/ply?file='+encodeURIComponent(path), path, {
+    const res=await window._gaussian.load(url, label, {
       shDegree,
+      maxSplats,
       modelRotationDeg: { roll, pitch, yaw }
     });
     const n=window._gaussian.getSplatCount();
-    if(infoEl)infoEl.textContent=n.toLocaleString()+' splats | '+window._gaussian.getFps()+' fps';
+    _refreshGsInfo();
     if(loadEl)loadEl.textContent='load: '+Math.round((res?.totalMs??(performance.now()-t0)))+' ms';
-    setStatus('Loaded '+n.toLocaleString()+' Gaussians','ok');
-    setGsOverlay('hidden');
-    _logUI('gs','loaded '+path+' ('+n+' splats)','ok');
+    if(res?.textureError){
+      setStatus('已加载 '+n.toLocaleString()+' 个 Gaussians，但显卡纹理分配报错，画面可能不完整——请调低 Max pts 后重新加载','err');
+      setGsOverlay('error','GPU 纹理分配失败','场景可能超出显卡纹理容量限制，请调低 3DGS 面板里的 Max pts 滑块后重新加载该文件');
+      _logUI('gs','loaded '+label+' ('+n+' splats) but GPU texture allocation failed — lower Max pts and reload','err');
+    }else{
+      setStatus('Loaded '+n.toLocaleString()+' Gaussians','ok');
+      setGsOverlay('hidden');
+      _logUI('gs','loaded '+label+' ('+n+' splats)','ok');
+    }
   }catch(e){
     if(infoEl)infoEl.textContent='error';
     setStatus('GS load error: '+e.message,'err');
@@ -1163,6 +1257,16 @@ async function onGsFileSelect(path){
 function setGsShLevel(v){
   const lv=Math.max(0,Math.min(3,parseInt(v,10)||0));
   window._gaussian?.setShDegree?.(lv);
+}
+function gsSetMaxPointsFromUI(v){
+  const n=Math.max(500000,Math.min(20000000,parseInt(v,10)||20000000));
+  const el=document.getElementById('gs-max-pts-val');
+  if(el)el.textContent=(n/1000000).toFixed(1)+'M';
+}
+function gsSetRenderFpsFromUI(v){
+  const fps=Math.max(1,Math.min(60,parseInt(v,10)||30));
+  const el=document.getElementById('gs-render-fps-val');if(el)el.textContent=String(fps);
+  window._three?.setGsRenderFpsCap?.(fps);
 }
 
 function setGsRotationFromUi(){
@@ -1218,7 +1322,9 @@ function _refreshGsInfo(){
   if(!infoEl||!window._gaussian)return;
   const n=window._gaussian.getSplatCount?.()||0;
   const fps=window._gaussian.getFps?.()||0;
-  infoEl.textContent=n.toLocaleString()+' splats | '+fps+' fps';
+  const visible=window._gaussian.getVisibleSplatCount?.()??n;
+  const countStr=(n>0&&visible<n)?(visible.toLocaleString()+' / '+n.toLocaleString()+' splats'):(n.toLocaleString()+' splats');
+  infoEl.textContent=countStr+' | '+fps+' fps';
   if(loadingEl&&loadingEl.style.display!=='none'){
     const t=((Date.now()/300)|0)%4;
     loadingEl.textContent='loading'+'.'.repeat(t);
@@ -1277,10 +1383,24 @@ setInterval(_refreshGsInfo,300);
       }
     }
     if(!collected.length){setStatus('drop ignored: no .pcd/.ply files','warn');return;}
-    setStatus('uploading '+collected.length+' file'+(collected.length>1?'s':'')+'\u2026','loading');
+    // Browsers never expose a dropped file's real filesystem path, so large .ply
+    // scenes can't be symlinked — they'd have to be fully uploaded/copied into
+    // _dropped/, which is slow and memory-heavy for multi-GB 3DGS files. Skip those
+    // and point the user at the native picker (zero-copy, loads straight from disk).
+    const LARGE_PLY_BYTES = 100*1024*1024; // 100MB
+    const isTooLargePly = ({file})=>file.name.toLowerCase().endsWith('.ply') && file.size > LARGE_PLY_BYTES;
+    const tooLarge = collected.filter(isTooLargePly);
+    const toUpload = collected.filter(f=>!isTooLargePly(f));
+    if(tooLarge.length){
+      const names=tooLarge.map(({file})=>file.name+' ('+(file.size/1024/1024).toFixed(0)+'MB)').join(', ');
+      setStatus(tooLarge.length+' large .ply skipped (>100MB): '+names+' \u2014 use File \u2192 Open PLY (3DGS)\u2026 instead','warn');
+      _logUI('gs','skipped large .ply drop(s): '+names,'warn');
+    }
+    if(!toUpload.length)return;
+    setStatus('uploading '+toUpload.length+' file'+(toUpload.length>1?'s':'')+'\u2026','loading');
     _stopPlay();
     let firstPcd='', firstPly='', okN=0;
-    for(const {file, relpath} of collected){
+    for(const {file, relpath} of toUpload){
       const lower=file.name.toLowerCase();
       const isPly=lower.endsWith('.ply');
       const api=isPly?'/api/upload_ply':'/api/upload_pcd';
@@ -1356,4 +1476,90 @@ document.addEventListener('keydown',e=>{
   if(e.key==='b'||e.key==='B')toggleSidebar();
   if(e.key==='l'||e.key==='L')toggleLogPanel();
 });
+
+// ── Top menu bar (File/Help) ────────────────────────────────────────────────
+function closeTopbarMenus(){document.querySelectorAll('.topbar-item.open').forEach(el=>el.classList.remove('open'));}
+function toggleTopbarMenu(btn){
+  const item=btn.closest('.topbar-item');if(!item)return;
+  const wasOpen=item.classList.contains('open');
+  closeTopbarMenus();
+  if(!wasOpen)item.classList.add('open');
+}
+document.addEventListener('click',e=>{if(!e.target.closest('.topbar-item'))closeTopbarMenus();});
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape')return;
+  closeTopbarMenus();
+  closeAboutModal();
+  closeHelpModal();
+  closeWelcomeModal();
+});
+
+async function openPlyFromMenu(){
+  setStatus('opening PLY picker\u2026','loading');
+  try{
+    const r=await fetch('/api/pick_ply');
+    const d=await r.json();
+    if(d.error){setStatus('Picker: '+d.error,'err');return;}
+    if(!d.path){setStatus('cancelled','idle');return;}
+    // Load directly from its original location on disk — no upload/copy needed,
+    // which matters a lot for large 3DGS scenes (hundreds of MB to several GB).
+    switchMode('gs');
+    await onGsFileSelectAbs(d.path);
+  }catch(e){setStatus('Picker error','err');}
+}
+
+// ── About modal ──────────────────────────────────────────────────────────────
+async function showAboutModal(){
+  const el=document.getElementById('about-modal-overlay');if(!el)return;
+  el.classList.add('open');
+  const body=document.getElementById('about-body');
+  if(body)body.textContent='loading\u2026';
+  try{
+    const r=await fetch('/api/app_info');
+    const d=await r.json();
+    if(body)body.innerHTML=
+      '<div><b>'+d.app_name+'</b></div>'+
+      '<div>Version: '+d.version+'</div>'+
+      '<div>Git commit: '+d.git_commit+'</div>'+
+      '<div>Build time: '+d.build_time+'</div>'+
+      '<div>Platform: '+d.platform+'</div>';
+  }catch(e){
+    if(body)body.textContent='Failed to load app info.';
+  }
+}
+function closeAboutModal(){const el=document.getElementById('about-modal-overlay');if(el)el.classList.remove('open');}
+
+// ── Help / User Guide modal (Lidar / Camera / 3DGS tabs) ────────────────────
+function showHelpModal(){
+  const el=document.getElementById('help-modal-overlay');if(!el)return;
+  el.classList.add('open');
+}
+function closeHelpModal(){const el=document.getElementById('help-modal-overlay');if(el)el.classList.remove('open');}
+function helpShowTab(tab){
+  ['lidar','camera','gs'].forEach(t=>{
+    const btn=document.getElementById('help-tab-'+t);if(btn)btn.classList.toggle('active',t===tab);
+    const page=document.getElementById('help-page-'+t);if(page)page.style.display=(t===tab)?'':'none';
+  });
+}
+
+// ── Welcome modal (shortcuts + startup preference) ──────────────────────────
+function showWelcomeModal(){
+  const el=document.getElementById('welcome-modal-overlay');if(!el)return;
+  el.classList.add('open');
+}
+function closeWelcomeModal(){const el=document.getElementById('welcome-modal-overlay');if(el)el.classList.remove('open');}
+function saveWelcomePref(){
+  const cb=document.getElementById('welcome-dont-show');if(!cb)return;
+  const show=!cb.checked;
+  fetch('/api/welcome_pref',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({show_welcome_on_startup:show})}).catch(()=>{});
+}
+async function _initWelcomeOnStartup(){
+  try{
+    const r=await fetch('/api/welcome_pref');
+    const d=await r.json();
+    const cb=document.getElementById('welcome-dont-show');
+    if(cb)cb.checked=!d.show_welcome_on_startup;
+    if(d.show_welcome_on_startup)showWelcomeModal();
+  }catch(e){/* ignore: keep welcome modal hidden if the backend is unreachable */}
+}
 

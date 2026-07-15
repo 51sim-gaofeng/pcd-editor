@@ -32,7 +32,7 @@ Open **http://localhost:9089** in your browser, or just launch the binary on Win
 ### Static PCD viewing
 - ASCII / binary / `binary_compressed` PCD parsing with multi-tier disk cache
 - Drag-and-drop upload, native OS file/folder pickers, recursive directory browsing
-- Playback engine for sequential frame folders, with seek bar and FPS control
+- Playback engine for sequential frame folders, with seek bar, FPS control, and a configurable **Max pts** downsample cap (default 300k, keyed into the disk/memory cache so changing it doesn't serve stale data)
 - Lasso / eraser / pick / waypoint editing modes; undo / save edited PCD
 - Z-height filter, color modes (height / intensity / flat), free-fly camera
 
@@ -77,6 +77,11 @@ Open **http://localhost:9089** in your browser, or just launch the binary on Win
 
 ### Gaussian Splatting (3DGS / PLY)
 - Dedicated GS mode for `.ply` assets with drag-and-drop upload and server-side file listing
+- **`File → Open PLY (3DGS)…`**: native OS file picker that loads the scene directly from its original location via `/api/ply_abs` — no upload/copy, works for arbitrarily large scenes (GBs)
+- **Large-file drop guard**: dragging a `.ply` over 100MB is skipped (never uploaded) with a status message pointing at the native picker instead, since browsers can't expose a dropped file's real path (so a copy into `_dropped/` would be the only option, which is slow/memory-heavy for multi-GB scenes)
+- **Max pts** slider (500k–20M, default 20M): caps how many splats get loaded (uniform stride downsample); if the GPU can't allocate a texture that large (`glTexStorage2D: ... too large`, driver/hardware dependent), the load still succeeds but a visible warning tells you to lower this slider and reload
+- **Render FPS** slider (1–60, default 30): independent frame-rate cap for GS scenes (separate from the general idle/active render-on-demand throttle), since per-pixel splat shading cost scales with scene size
+- Shared **View / Edit Cloud / Trajectory** viewport toolbar also works in GS mode: camera presets (3D/Top/Front/Left), Free Fly, and **Filter Z** (keep/exclude a height range) all apply to loaded splats — Filter Z is enforced in the sort worker (not just a shader-side visual clip), so it actually reduces the GPU instance count and displayed splat count updates to show `visible / total`
 - Shader-side model rotation using Roll / Pitch / Yaw (degrees), with covariance-consistent transform
 - Pivot-aware rotation (`p' = R(p - pivot) + pivot`) synchronized across rendering and depth sorting
 - Double-click viewport to set GS rotation pivot for faster interactive alignment
@@ -85,13 +90,22 @@ Open **http://localhost:9089** in your browser, or just launch the binary on Win
 #### 3DGS Tab controls
 - `GS File`: select a `.ply` file from the server list, then load into GS mode.
 - `SH Level`: switch SH degree (`0`-`3`) to balance quality and performance.
+- `Max pts`: cap the number of splats loaded; lower it if you hit a GPU texture-allocation warning after loading.
+- `Render FPS`: cap the GS render loop's frame rate independent of the general idle-render throttle.
 - `Model Rotation (deg)`: adjust `Roll / Pitch / Yaw`; values apply immediately on change.
 - `Reset Rotation`: reset all three rotation angles back to `0`.
 - `Color Adjust`: tune `Brightness / Contrast / Saturation / Temperature / Hue` in real time.
 - `Reset Color`: restore color adjustment sliders to default values.
-- Status area (`loading / load ms / info`): shows current load state, load time, and splat/fps info.
+- Status area (`loading / load ms / info`): shows current load state, load time, and splat/fps info (shows `visible / total splats` while Filter Z is active).
 - In-view interaction: double-click inside viewport while GS tab is active to set the rotation pivot.
 
+
+### Menu bar & Welcome screen
+- Top menu bar (`File` / `Help`) for quick access to Open PCD File, Open Directory, Open PLY (3DGS), and Save PCD
+- `Help → User Guide` opens a tabbed usage guide (Lidar / Camera / 3DGS), each tab covering that mode's controls and workflow
+- `Help → About` shows app name, version, git commit, build time, and platform (via `/api/app_info`)
+- `Help → Keyboard Shortcuts` opens the same welcome dialog shown on startup, listing all shortcuts (keyboard + mouse, including UE-style free-fly controls)
+- Welcome dialog shows on every startup by default; check "Don't show this on startup" to persist the preference (`/api/welcome_pref`)
 
 ### Visualization aids
 - Square or **circle** ground grid (concentric rings + 30° spokes)
@@ -204,6 +218,7 @@ All HTTP routing. Static files under `/static/*` are served from `view/static/`.
 | GET    | `/api/browse`                 | Directory listing                        |
 | GET    | `/api/trajectory`             | List or load trajectory JSON             |
 | GET    | `/api/pick_file`              | Native OS file picker (tkinter)          |
+| GET    | `/api/pick_ply`               | Native OS file picker for `.ply`, returns absolute path (zero-copy GS loading) |
 | GET    | `/api/pick_dir`               | Native OS folder picker (tkinter)        |
 | GET    | `/api/set_dir`                | Change data directory                    |
 | GET    | `/api/open_in_explorer`       | Open directory in Explorer               |
@@ -218,6 +233,11 @@ All HTTP routing. Static files under `/static/*` are served from `view/static/`.
 | GET    | `/api/camera_ensure`          | Ensure/start camera receiver             |
 | GET    | `/api/camera_rebind`          | Rebind camera receiver IP/port           |
 | GET    | `/api/gaussian_files`         | List available `.ply` files for GS mode |
+| GET    | `/api/pcd_max_points`         | Read the current static-PCD downsample cap |
+| GET    | `/api/pcd_set_max_points`     | Set the static-PCD downsample cap        |
+| GET    | `/api/app_info`               | App name, version, git commit, build time, platform |
+| GET    | `/api/welcome_pref`           | Read welcome-screen-on-startup preference |
+| POST   | `/api/welcome_pref`           | Update welcome-screen-on-startup preference |
 | POST   | `/api/trajectory`             | Save trajectory JSON                     |
 | POST   | `/api/save_pcd`               | Save edited point cloud                  |
 | POST   | `/api/upload_pcd`             | Receive drag-and-drop PCD upload         |

@@ -71,6 +71,10 @@ self.onmessage = function (e) {
     const { totalCount: N, camPos, camFwd, maxVisible } = msg;
     const centers = new Float32Array(msg.centers);
     const radii = msg.radii ? new Float32Array(msg.radii) : null;
+    const filterActive = !!msg.filterActive;
+    const filterMin = msg.filterMin;
+    const filterMax = msg.filterMax;
+    const filterExclude = msg.filterMode === 1 || msg.filterMode === 1.0;
 
     const cpx = camPos[0], cpy = camPos[1], cpz = camPos[2];
     const cfx = camFwd[0], cfy = camFwd[1], cfz = camFwd[2];
@@ -78,22 +82,43 @@ self.onmessage = function (e) {
     /* ── Phase 1: Stable working set selection (SuperSplat-style) ── */
     const tCull0 = performance.now();
 
+    // Z-height filter first, if active: drop out-of-range splats entirely so they
+    // never reach the GPU (reduces vertex-shader invocation count / instanceCount),
+    // unlike the vertex-shader clip which only hides them visually after the GPU
+    // has already processed them.
+    let candidateIndices = null;   // null = "identity", all N splats are candidates
+    let candidateCount = N;
+    if (filterActive) {
+        const buf = new Uint32Array(N);
+        let c = 0;
+        for (let i = 0; i < N; i++) {
+            const z = centers[i * 3 + 2];
+            const inside = z >= filterMin && z <= filterMax;
+            if (filterExclude ? !inside : inside) buf[c++] = i;
+        }
+        candidateIndices = buf;
+        candidateCount = c;
+    }
+
     // Keep selected splat set stable across camera motion.
     // This avoids visible-set thrashing/pop-in when rapidly retreating or orbiting.
     let activeIndices;
     let activeCount;
 
-    if (N > maxVisible) {
+    if (candidateCount > maxVisible) {
         activeIndices = new Uint32Array(maxVisible);
-        const step = N / maxVisible;
+        const step = candidateCount / maxVisible;
         for (let i = 0; i < maxVisible; i++) {
-            activeIndices[i] = Math.floor(i * step);
+            const k = Math.floor(i * step);
+            activeIndices[i] = candidateIndices ? candidateIndices[k] : k;
         }
         activeCount = maxVisible;
     } else {
-        activeIndices = new Uint32Array(N);
-        for (let i = 0; i < N; i++) activeIndices[i] = i;
-        activeCount = N;
+        activeIndices = new Uint32Array(candidateCount);
+        for (let i = 0; i < candidateCount; i++) {
+            activeIndices[i] = candidateIndices ? candidateIndices[i] : i;
+        }
+        activeCount = candidateCount;
     }
 
     const cullTime = performance.now() - tCull0;

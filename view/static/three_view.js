@@ -184,7 +184,15 @@ window._grid={
 const wrap=document.getElementById('canvas-wrap');
 const lc=document.getElementById('lasso-canvas');
 const lctx=lc.getContext('2d');
-function resize(){const w=wrap.clientWidth,h=wrap.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();lc.width=w;lc.height=h;window._gaussian?.onResize?.(w,h);}
+// 鈹€鈹€ Render-on-demand 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// An unconditional render()-every-frame loop pins the GPU's 3D engine at 100% even
+// when the scene is completely static (no camera movement, no live data). Declared
+// here (before resize()'s initial synchronous call) so requestRender() is safe to
+// call immediately at module load.
+const IDLE_KEEPALIVE_MS = 250;   // low-frequency keepalive while fully idle (~4fps)
+let _lastRenderAt = 0;
+function requestRender(){_lastRenderAt = 0;}
+function resize(){const w=wrap.clientWidth,h=wrap.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();lc.width=w;lc.height=h;window._gaussian?.onResize?.(w,h);requestRender();}
 new ResizeObserver(resize).observe(wrap);resize();
 
 // 鈹€鈹€ Free-fly controls (custom Z-up, RMB to look) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -299,22 +307,55 @@ function _flyTick(){
 
 // Rolling stats for renderer.render() 鈥?exposed so DDS heartbeat can show GPU cost.
 let _renderMsEwma=0,_renderCount=0;
+// GS scenes are heavy per-pixel alpha-blended shaders (millions of splats); let the
+// user cap their render rate explicitly instead of always racing at rAF/vsync speed.
+let _gsRenderFpsCap=30,_gsRenderMinInterval=1000/30,_gsLastRenderAt=0;
+// Referenced by animate() below, which is invoked synchronously at the bottom of this
+// block — must be declared before that call or it throws a TDZ ReferenceError that
+// aborts the rest of module evaluation (including the window._gaussian assignment).
+let _gaussianView = null;
+function setGsRenderFpsCap(fps){
+  _gsRenderFpsCap=Math.max(1,Math.min(60,fps|0));
+  _gsRenderMinInterval=1000/_gsRenderFpsCap;
+}
+function _isInteractive(){
+  return _freeMode || pickMode || drawMode || lassoMode || eraserMode
+      || !!_liveCloud                                                        // DDS/Streaming live updates
+      || !!(_gaussianView && _gaussianView.isLoading && _gaussianView.isLoading());
+}
 function animate(){
   requestAnimationFrame(animate);
   _flyTick();
-  if(!_freeMode)controls.update();
+  const camChanged = _freeMode ? true : controls.update();
+  const now = performance.now();
+  const gsActive = !!(_gaussianView && _gaussianView.getLoadedSplats && _gaussianView.getLoadedSplats() > 0);
+  if(gsActive){
+    // Gaussian Splatting: explicit FPS cap regardless of camera/interaction state,
+    // since it's the heaviest per-pixel workload in this app.
+    if(now - _gsLastRenderAt < _gsRenderMinInterval) return;
+    // Advance by the fixed target interval (not reset to `now`) so the achieved rate
+    // tracks the requested cap closely. Resetting to `now` quantizes against however
+    // long a render actually takes: e.g. if a frame costs ~25ms and the cap targets
+    // 33.3ms (30fps), "elapsed since now" never lands near 33.3ms — it has to wait a
+    // full extra ~25ms tick, overshooting to ~50ms (~20fps) instead of the requested 30.
+    _gsLastRenderAt += _gsRenderMinInterval;
+    if(now - _gsLastRenderAt > _gsRenderMinInterval) _gsLastRenderAt = now; // clamp after idle/cap change
+  }else{
+    const idleDue = (now - _lastRenderAt) >= IDLE_KEEPALIVE_MS;
+    if(!camChanged && !_isInteractive() && !idleDue) return;   // scene is static — skip the GPU work entirely
+    _lastRenderAt = now;
+  }
   const t0=performance.now();
   renderer.render(scene,camera);
   window._gaussian?.tick?.(t0);
   const dt=performance.now()-t0;
   _renderMsEwma=_renderMsEwma>0?(_renderMsEwma*0.9+dt*0.1):dt;
   _renderCount++;
-  window._renderStats={ewmaMs:_renderMsEwma,count:_renderCount};
+  window._renderStats={ewmaMs:_renderMsEwma,count:_renderCount,calls:renderer.info.render.calls,triangles:renderer.info.render.triangles};
 }
 animate();
 
 // 鈹€鈹€ Gaussian Splatting public API 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-let _gaussianView = null;
 window._gaussian = {
         async loadBuffer(buffer, filename, options) { return _gaussianView.loadBuffer(buffer, filename, options||{}); },
   async load(url, filename, options) {
@@ -328,6 +369,7 @@ window._gaussian = {
   },
   tick(now) { _gaussianView?.tick(now); },
   getSplatCount() { return _gaussianView?.getLoadedSplats() ?? 0; },
+  getVisibleSplatCount() { return _gaussianView?.getVisibleSplats() ?? 0; },
   getFps()        { return _gaussianView?.getFps() ?? 0; },
   setSplatScale(s){ _gaussianView?.setSplatScale(s); },
   setVisible(v)   { _gaussianView?.setVisible(v); },
@@ -337,6 +379,8 @@ window._gaussian = {
   onResize(w, h)  { _gaussianView?.onResize(w, h); },
   setColorAdjust(key, val) { _gaussianView?.setColorAdjust(key, val); },
   resetColorAdjust() { _gaussianView?.resetColorAdjust(); },
+  applyFilter(zMin, zMax, mode) { _gaussianView?.applyFilter(zMin, zMax, mode); },
+  resetFilter() { _gaussianView?.resetFilter(); },
 };
 
 let pointCloud=null,rawPoints=[],rawFields=[],ptSize=1.5,colorMode='height';
@@ -624,6 +668,10 @@ function buildPointCloud(floats,nfields,fields,mode,filt){
     lockZRange(zMn,zMx);
   }
   const zR=zMx-zMn||1;
+  // PCD file intensity is commonly raw 0-255 (reflectivity byte), unlike the live
+  // streaming/DDS protocols which already send it normalized to 0-1. Auto-detect
+  // from the observed max in this frame so both encodings map onto the same LUT.
+  const iMult=(ii>=0&&iMx>1.5)?1:255;
   // Pass 2: fill buffers
   for(let k=0;k<n;k++){
     const i=idxs?idxs[k]:k,b=i*nfields;
@@ -632,7 +680,7 @@ function buildPointCloud(floats,nfields,fields,mode,filt){
     if(mode==='height'){
       [r,g,bl]=heightColor((floats[b+zi]-zMn)/zR);
     }else if(mode==='intensity'&&ii>=0){
-      const rawInt=Math.max(0,Math.min(255,((floats[b+ii]||0)*255+0.5)|0));
+      const rawInt=Math.max(0,Math.min(255,((floats[b+ii]||0)*iMult+0.5)|0));
       const lo=rawInt*3;
       r=_streamingIntensityLUT[lo]/255;
       g=_streamingIntensityLUT[lo+1]/255;
@@ -656,7 +704,7 @@ function _floatsFromRawPoints(){
   rawFloats=new Float32Array(rawPoints.length*rawNfields);
   for(let i=0;i<rawPoints.length;i++){const b=i*rawNfields;for(let j=0;j<rawNfields;j++)rawFloats[b+j]=rawPoints[i][j]||0;}
 }
-function replacePointCloud(pc){if(pointCloud){scene.remove(pointCloud);pointCloud.geometry.dispose();}pointCloud=pc;scene.add(pointCloud);}
+function replacePointCloud(pc){if(pointCloud){scene.remove(pointCloud);pointCloud.geometry.dispose();}pointCloud=pc;scene.add(pointCloud);requestRender();}
 function clearPointCloudInternal(){
   if(pointCloud){scene.remove(pointCloud);pointCloud.geometry.dispose();if(pointCloud.material)pointCloud.material.dispose();pointCloud=null;}
   if(_liveCloud){scene.remove(_liveCloud);_liveCloud.geometry.dispose();_liveCloud.material.dispose();_liveCloud=null;_liveCapN=0;}
@@ -849,7 +897,7 @@ window._three={
     if(!_camInit){_camInit=true;}  // 淇濈暀棣栧抚鏍囪锛屼絾涓嶅啀瑕嗙洊鍒濆瑙嗚
   },
   resetCamInit(){_camInit=false;},
-  setPointSize(s){ptSize=s;if(pointCloud)pointCloud.material.size=s*0.05;if(_liveCloud)_liveCloud.material.size=s*0.05;if(selectionCloud)selectionCloud.material.size=s*0.08;},
+  setPointSize(s){ptSize=s;if(pointCloud)pointCloud.material.size=s*0.05;if(_liveCloud)_liveCloud.material.size=s*0.05;if(selectionCloud)selectionCloud.material.size=s*0.08;requestRender();},
   setColorMode(m){colorMode=m;if(m!=='height')unlockZRange();if(rawFloats)replacePointCloud(buildPointCloud(rawFloats,rawNfields,rawFields,m,getFilt()));},
   setFlip(x,y,z){flipX=x;flipY=y;flipZ=z;if(!rawFloats)return;replacePointCloud(buildPointCloud(rawFloats,rawNfields,rawFields,colorMode,getFilt()));},
   resetCamera(){camera.position.set(...INIT_CAM_POS);camera.up.set(0,0,1);controls.target.set(...INIT_CAM_TARGET);controls.update();},
@@ -911,6 +959,7 @@ window._three={
   },
   resize(){resize();},
   isFreeMode(){return _freeMode;},
+  setGsRenderFpsCap(fps){setGsRenderFpsCap(fps);},
   setSceneAxesVisible(on){
     if(_sceneAxesRoot)_sceneAxesRoot.visible=!!on;
   }

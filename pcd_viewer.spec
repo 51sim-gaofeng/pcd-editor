@@ -6,7 +6,7 @@ to keep binary size small.
 Supports both Windows and Linux.
 """
 import os, sys
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules, collect_dynamic_libs
 
 block_cipher = None
 
@@ -21,6 +21,13 @@ else:
     _wv_d, _wv_b, _wv_h = [], [], []
 
 _ws_d, _ws_b, _ws_h = collect_all('websockets')
+
+# numpy's BLAS backend DLL (e.g. libopenblas64__*.dll on conda envs) is not
+# always picked up by PyInstaller's static dependency scan — conda-installed
+# numpy loads it differently than a pip wheel's numpy.libs/_distributor_init.py
+# trick, so it can silently be missing from the bundle even though the build
+# itself reports success. Explicitly force-collect it.
+_np_b = collect_dynamic_libs('numpy')
 
 # gi (PyGObject) not bundled — C extension cannot be reliably frozen
 _gi_d, _gi_b, _gi_h = [], [], []
@@ -57,7 +64,7 @@ if sys.platform == 'win32':
 a = Analysis(
     ['pcd_viewer.py'],
     pathex=['.'],
-    binaries=[] + _wv_b + _gi_b + _ws_b,
+    binaries=[] + _wv_b + _gi_b + _ws_b + _np_b,
     datas=[
         (os.path.join('view', 'templates'), os.path.join('view', 'templates')),
         (os.path.join('view', 'static'),    os.path.join('view', 'static')),

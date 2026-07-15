@@ -16,9 +16,10 @@
  */
 
 import * as THREE from 'three';
-import { SplatRenderer } from './splat_renderer.js';
+import { SplatRenderer, estimateSafeMaxSplats } from './splat_renderer.js';
 
 const MAX_INDEXABLE_SPLATS = 20000000;
+const SH_NEED_BY_DEGREE = [0, 3, 8, 15];   // target SH coeff count per degree, mirrors ply_parser_worker.js
 
 export class GaussianView {
     constructor(renderer, camera, scene, controls) {
@@ -70,8 +71,12 @@ export class GaussianView {
         this._filename = filename || url;
         this._dispose();
 
-        this._maxSplats = Math.max(100000, Math.min(MAX_INDEXABLE_SPLATS, options.maxSplats || MAX_INDEXABLE_SPLATS));
         this._shDegree  = Math.max(0, Math.min(3, options.shDegree || 0));
+        // Clamp maxSplats by what the GPU can actually allocate textures for
+        // (avoids "glTexStorage2D: Texture total allocation size is too large"
+        // on scenes with tens of millions of splats, especially with SH data).
+        const safeCap = estimateSafeMaxSplats(this.renderer, SH_NEED_BY_DEGREE[this._shDegree] || 0);
+        this._maxSplats = Math.max(100000, Math.min(MAX_INDEXABLE_SPLATS, safeCap, options.maxSplats || MAX_INDEXABLE_SPLATS));
 
         this._splat = new SplatRenderer(this.renderer, this.camera, this.scene);
         this._splat.setShDegree(this._shDegree);
@@ -155,6 +160,7 @@ export class GaussianView {
 
     getTotalSplats()  { return this._totalSplats; }
     getLoadedSplats() { return this._loadedSplats; }
+    getVisibleSplats(){ return this._splat?.getVisibleCount() ?? this._loadedSplats; }
     getFilename()     { return this._filename; }
     getFps()          { return this._fps; }
     getLoadMetrics()  { return { fetchMs: this._fetchMs, parseMs: this._parseMs, totalMs: this._totalMs }; }
@@ -168,6 +174,8 @@ export class GaussianView {
     setColorAdjust(key, val) { this._splat?.setColorAdjust(key, val); }
     resetColorAdjust() { this._splat?.resetColorAdjust(); }
     getColorDefaults() { return this._splat?.getColorDefaults() || { brightness: 0, contrast: 1, saturation: 1, temperature: 0, hueShift: 0 }; }
+    applyFilter(zMin, zMax, mode) { this._splat?.applyFilter(zMin, zMax, mode); }
+    resetFilter() { this._splat?.resetFilter(); }
 
     dispose() { this._dispose(); }
 
@@ -227,7 +235,22 @@ export class GaussianView {
                     this._forceSortOnce = true;
                     this._lastSortAt = -1e9;
                     this._splat.setVisible(true);
-                    resolve({ totalCount: msg.totalCount, sourceCount: this._sourceSplats, sampled: this._sampled, fetchMs: this._fetchMs, parseMs: this._parseMs, totalMs: this._totalMs });
+                    // Detect GPU texture allocation failures (e.g. "glTexStorage2D:
+                    // Texture total allocation size is too large") that WebGL doesn't
+                    // surface as a JS exception — the scene would otherwise render as
+                    // silently blank with no indication of what went wrong. Give the
+                    // renderer a bit of time to actually attempt the GPU upload (GS
+                    // Render FPS cap may throttle renders well below 60fps) before
+                    // checking gl.getError().
+                    const finish = () => {
+                        let textureError = false;
+                        try {
+                            const gl = this.renderer.getContext();
+                            if (gl.getError() !== gl.NO_ERROR) textureError = true;
+                        } catch (_e) { /* ignore, best-effort diagnostic only */ }
+                        resolve({ totalCount: msg.totalCount, sourceCount: this._sourceSplats, sampled: this._sampled, fetchMs: this._fetchMs, parseMs: this._parseMs, totalMs: this._totalMs, textureError });
+                    };
+                    setTimeout(finish, 500);
 
                 } else if (msg.type === 'error') {
                     this._worker.terminate();

@@ -8,8 +8,20 @@ import time
 
 import numpy as np
 
-_PCD_CACHE: dict = {}          # path -> (mtime, binary_bytes)
+_PCD_CACHE: dict = {}          # (path, max_pts) -> (mtime, binary_bytes)
 _PARSE_SEM = threading.Semaphore(3)   # max 3 concurrent file parses
+
+_PCD_MAX_POINTS: int = 300_000  # user-configurable downsample cap for static PCD playback
+
+
+def set_pcd_max_points(n: int) -> None:
+    """Update the downsample cap applied when parsing static .pcd files."""
+    global _PCD_MAX_POINTS
+    _PCD_MAX_POINTS = max(1000, int(n))
+
+
+def get_pcd_max_points() -> int:
+    return _PCD_MAX_POINTS
 
 
 def parse_pcd(path: str) -> dict:
@@ -96,8 +108,8 @@ def parse_pcd(path: str) -> dict:
                 print(f'[PCD] {fname} np.fromstring FAILED: {_e}', flush=True)
         if arr2 is not None:
             orig_count = npoints
-            if len(arr2) > 300_000:
-                step = len(arr2) // 300_000 + 1
+            if len(arr2) > _PCD_MAX_POINTS:
+                step = len(arr2) // _PCD_MAX_POINTS + 1
                 arr2 = arr2[::step]
             _t3 = time.perf_counter()
             print(f'[PCD] {fname} ascii_total={(_t3-_t2)*1000:.1f}ms  final_pts={len(arr2)}', flush=True)
@@ -134,8 +146,8 @@ def parse_pcd(path: str) -> dict:
             arr = np.frombuffer(body, dtype=np.float32,
                                 count=npoints * nfields).reshape(npoints, nfields)
             orig_count = npoints
-            if npoints > 300_000:
-                step = npoints // 300_000 + 1
+            if npoints > _PCD_MAX_POINTS:
+                step = npoints // _PCD_MAX_POINTS + 1
                 arr = arr[::step]
             return {'fields': flat_fields, 'points': arr, 'count': len(arr),
                     'original_count': orig_count, 'file': os.path.basename(path)}
@@ -155,8 +167,8 @@ def parse_pcd(path: str) -> dict:
                 _tb1 = time.perf_counter()
                 print(f'[PCD] {fname} binary_mixed_frombuffer={(_tb1-_tb0)*1000:.1f}ms  shape={arr.shape}', flush=True)
                 orig_count = npoints
-                if npoints > 300_000:
-                    step = npoints // 300_000 + 1
+                if npoints > _PCD_MAX_POINTS:
+                    step = npoints // _PCD_MAX_POINTS + 1
                     arr = arr[::step]
                 return {'fields': flat_fields, 'points': arr, 'count': len(arr),
                         'original_count': orig_count, 'file': os.path.basename(path)}
@@ -170,7 +182,7 @@ def parse_pcd(path: str) -> dict:
                 points.append(list(struct.unpack_from(fmt, body, offset)))
                 offset += point_size
 
-    max_pts = 300_000
+    max_pts = _PCD_MAX_POINTS
     if len(points) > max_pts:
         step = len(points) // max_pts + 1
         points = points[::step]
@@ -235,18 +247,20 @@ def get_pcd_binary_cached(full_path: str) -> bytes:
     fname = os.path.basename(full_path)
     _parts = full_path.replace('\\', '/').split('/')
     label = '/'.join(_parts[-3:]) if len(_parts) >= 3 else fname
+    max_pts = _PCD_MAX_POINTS
+    cache_key = (full_path, max_pts)
     try:
         mtime = os.path.getmtime(full_path)
     except OSError:
         mtime = 0
     # 1) in-memory cache
-    cached = _PCD_CACHE.get(full_path)
+    cached = _PCD_CACHE.get(cache_key)
     if cached and cached[0] == mtime:
         print(f'[CACHE] {label} HIT memory  {(time.perf_counter()-_g0)*1000:.1f}ms', flush=True)
         return cached[1]
-    # 2) local-disk cache in .pcd_cache/ next to the PCD file
+    # 2) local-disk cache in .pcd_cache/ next to the PCD file (keyed by max_pts too)
     cache_dir  = os.path.join(os.path.dirname(full_path), '.pcd_cache')
-    bin_path   = os.path.join(cache_dir, fname + '.bin')
+    bin_path   = os.path.join(cache_dir, f'{fname}.mp{max_pts}.bin')
     mtime_path = bin_path + '.mtime'
     try:
         stored_mtime = float(open(mtime_path).read())
@@ -256,7 +270,7 @@ def get_pcd_binary_cached(full_path: str) -> bytes:
                 data = f.read()
             _d1 = time.perf_counter()
             print(f'[CACHE] {label} HIT disk  read={(_d1-_d0)*1000:.1f}ms  size={len(data)//1024}KB  total={(_d1-_g0)*1000:.1f}ms', flush=True)
-            _PCD_CACHE[full_path] = (mtime, data)
+            _PCD_CACHE[cache_key] = (mtime, data)
             return data
     except Exception as _e:
         print(f'[CACHE] {label} disk miss ({_e})', flush=True)
@@ -266,7 +280,7 @@ def get_pcd_binary_cached(full_path: str) -> bytes:
     with _PARSE_SEM:
         _s1 = time.perf_counter()
         print(f'[CACHE] {label} semaphore_wait={(_s1-_s0)*1000:.1f}ms', flush=True)
-        cached = _PCD_CACHE.get(full_path)
+        cached = _PCD_CACHE.get(cache_key)
         if cached and cached[0] == mtime:
             print(f'[CACHE] {label} HIT memory (after sem)  total={(_s1-_g0)*1000:.1f}ms', flush=True)
             return cached[1]
@@ -276,7 +290,7 @@ def get_pcd_binary_cached(full_path: str) -> bytes:
         data = pcd_to_binary(pcd)
         _p2 = time.perf_counter()
         print(f'[CACHE] {label} parse={(_p1-_p0)*1000:.1f}ms  serialize={(_p2-_p1)*1000:.1f}ms  total={(_p2-_g0)*1000:.1f}ms  size={len(data)//1024}KB', flush=True)
-        _PCD_CACHE[full_path] = (mtime, data)
+        _PCD_CACHE[cache_key] = (mtime, data)
     # write local-disk cache in background
     _data_snap, _mtime_snap = data, mtime
     def _write_cache():
