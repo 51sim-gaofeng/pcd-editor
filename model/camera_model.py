@@ -58,12 +58,12 @@ _cam_fusion_frames = deque(maxlen=60)
 
 
 def _candidate_dirs():
+    # The repository carries the Windows runtime so a checkout works without
+    # depending on the developer's SimOne installation path.
     yield Path(__file__).resolve().parent.parent / 'runtime' / 'simone' / 'Win64'
     env = os.environ.get('SIMONE_API_DIR')
     if env:
         yield Path(env)
-    yield Path(r'F:\simone\SimOneAPI\SensorRaw\SensorCamera\build\bin')
-    yield Path(r'F:\simone\SimOneAPI\lib\Win64')
     for entry in os.environ.get('PATH', '').split(os.pathsep):
         if entry:
             yield Path(entry)

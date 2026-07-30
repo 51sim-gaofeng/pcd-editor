@@ -32,9 +32,12 @@ _np_b = collect_dynamic_libs('numpy')
 # Include the official Streaming API in Windows builds when available.
 _simone_b = []
 if sys.platform == 'win32':
+    _bundled_simone_dir = os.path.abspath(
+        os.path.join('runtime', 'simone', 'Win64')
+    )
     _simone_dll = os.environ.get(
         'SIMONE_STREAMING_DLL',
-        r'F:\simone\SimOneAPI\SensorRaw\SensorCamera\build\bin\SimOneStreamingAPI.dll',
+        os.path.join(_bundled_simone_dir, 'SimOneStreamingAPI.dll'),
     )
     if os.path.isfile(_simone_dll):
         _simone_dir = os.path.dirname(_simone_dll)
