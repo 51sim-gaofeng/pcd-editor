@@ -126,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
         path   = parsed.path
         params = parse_qs(parsed.query)
 
-        
+
         # Browsers request favicon.ico automatically. We don't ship one, so
         # return an empty success-like response to avoid noisy 404 logs.
         if path == '/favicon.ico':
@@ -137,7 +137,7 @@ class Handler(BaseHTTPRequestHandler):
             except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
                 pass
             return
-        
+
         if path == '/':
             self._html(view.get_template('index.html'))
 
@@ -250,9 +250,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/streaming_ensure':
             try:
                 from config import config as _cfg
-                self._json(streaming_ensure_started(
-                    _cfg.streaming_udp_port, _cfg.streaming_udp_host,
-                    _cfg.streaming_info_port))
+                from model.simone_lidar_model import start as lidar_start
+                self._json({'started': True, **lidar_start(
+                    _cfg.streaming_udp_host, _cfg.streaming_udp_port,
+                    _cfg.streaming_info_port)})
             except Exception as e:
                 self._json({'started': False, 'error': str(e)})
 
@@ -260,7 +261,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(streaming_get_status())
 
         elif path == '/api/streaming_receiver_config':
-            self._json(streaming_get_receiver_config())
+            from model.simone_lidar_model import get_status as lidar_status
+            self._json(lidar_status())
 
         elif path == '/api/streaming_frame':
             self._handle_streaming_frame(params)
@@ -270,7 +272,8 @@ class Handler(BaseHTTPRequestHandler):
                 host      = params.get('ip',        ['127.0.0.1'])[0] or '127.0.0.1'
                 port      = int(params.get('port',      ['6699'])[0])
                 info_port = int(params.get('info_port', ['7788'])[0])
-                self._json({'ok': True, **streaming_rebind_udp(host, port, info_port)})
+                from model.simone_lidar_model import start as lidar_start
+                self._json({'ok': True, **lidar_start(host, port, info_port)})
             except (ValueError, IndexError):
                 self._json({'ok': False, 'error': 'invalid ip or port'})
             except Exception as e:
@@ -310,6 +313,47 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == '/api/camera_rebind':
             self._handle_camera_rebind(params)
+
+        elif path == '/api/fusion_ensure':
+            try:
+                from model.camera_model import start_udp_listener as cam_start
+                from model.simone_lidar_model import start as lidar_start
+                lidar_start(params.get('lidar_ip', ['10.66.8.44'])[0],
+                            int(params.get('lidar_port', ['6699'])[0]),
+                            int(params.get('info_port', ['7788'])[0]))
+                cam_start(port=int(params.get('camera_port', ['13956'])[0]),
+                          host=params.get('camera_ip', ['10.66.8.44'])[0])
+                self._json({'ok': True})
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
+
+        elif path == '/api/fusion_status':
+            from model.fusion_model import get_status as fusion_status
+            self._json(fusion_status())
+
+        elif path == '/api/fusion_frame':
+            try:
+                after = int(params.get('after', ['-1'])[0])
+            except (ValueError, IndexError):
+                after = -1
+            from model.fusion_model import get_frame as fusion_frame
+            seq, jpeg, meta = fusion_frame(after, 2.0)
+            if jpeg is None:
+                self._json({'changed': False, 'sequence': seq, **meta})
+            else:
+                try:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'image/jpeg')
+                    self.send_header('X-Fusion-Sequence', str(seq))
+                    self.send_header('X-Camera-Frame', str(meta.get('camera_frame', -1)))
+                    self.send_header('X-Lidar-Frame', str(meta.get('lidar_frame', -1)))
+                    self.send_header('X-Projected-Points', str(meta.get('projected_points', 0)))
+                    self.send_header('Cache-Control', 'no-store')
+                    self.send_header('Content-Length', str(len(jpeg)))
+                    self.end_headers()
+                    self.wfile.write(jpeg)
+                except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+                    pass
 
         elif path == '/api/gaussian_files':
             try:
@@ -358,6 +402,13 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_traj_export(body)
         elif parsed.path == '/api/welcome_pref':
             self._handle_welcome_pref_post(body)
+        elif parsed.path == '/api/fusion_config':
+            try:
+                data = json.loads(body or b'{}')
+                from model.fusion_model import configure
+                self._json(configure(data.get('camera') or {}, data.get('lidar') or {}))
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
         else:
             self.send_error(404)
 
@@ -667,14 +718,15 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, IndexError):
             after_id = -1
         from model.camera_model import get_latest_frame_blocking as cam_frame
-        fid, jpeg = cam_frame(after_id, timeout=2.0)
+        fid, source_fid, jpeg = cam_frame(after_id, timeout=2.0)
         if jpeg is None:
-            self._json({'frame_id': fid, 'changed': False})
+            self._json({'frame_id': fid, 'source_frame_id': source_fid, 'changed': False})
             return
         try:
             self.send_response(200)
             self.send_header('Content-Type', 'image/jpeg')
             self.send_header('X-Frame-Id', str(fid))
+            self.send_header('X-Source-Frame-Id', str(source_fid))
             self.send_header('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate')
             self.send_header('Pragma', 'no-cache')
             self.send_header('Content-Length', str(len(jpeg)))
@@ -685,7 +737,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_camera_ensure(self, params):
         try:
-            host = params.get('ip', ['127.0.0.1'])[0] or '127.0.0.1'
+            host = params.get('ip', ['10.66.8.44'])[0] or '10.66.8.44'
             port = int(params.get('port', ['9870'])[0])
             from model.camera_model import start_udp_listener as cam_start, get_status as cam_status
             cam_start(port=port, host=host)
@@ -695,7 +747,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_camera_rebind(self, params):
         try:
-            host = params.get('ip', ['127.0.0.1'])[0] or '127.0.0.1'
+            host = params.get('ip', ['10.66.8.44'])[0] or '10.66.8.44'
             port = int(params.get('port', ['9870'])[0])
             from model.camera_model import rebind as cam_rebind
             self._json({'ok': True, **cam_rebind(host, port)})
@@ -749,4 +801,3 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
         except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
             pass
-

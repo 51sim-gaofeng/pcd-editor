@@ -106,7 +106,7 @@ _WS_HEADER_FMT  = '<4sIIQ'
 _WS_HEADER_SIZE = struct.calcsize(_WS_HEADER_FMT)  # 20 bytes
 _WS_HEADER_PACK = struct.Struct(_WS_HEADER_FMT).pack
 
-_SM_MAX_POINTS: int = 60_000
+_SM_MAX_POINTS: int = 600_000
 _SM_DECODE_QUEUE_SIZE: int = 4
 
 # ── Diagnostics: periodically-refreshed pipeline health snapshot ─────────────
@@ -338,6 +338,15 @@ def _store_frame(points: np.ndarray, frame_id: int) -> None:
         _sm_ds_ms_total     += ds_ms
         _sm_out_bytes_total += len(binary)
         _sm_cond.notify_all()
+
+
+def ingest_official_frame(points: np.ndarray, frame_id: int) -> None:
+    """Publish an SDK-decoded frame through the existing browser data path."""
+    global _sm_running
+    with _sm_lock:
+        _sm_running = True
+    _store_frame(points, int(frame_id))
+
 
 
 # ── DIFOP listener thread ─────────────────────────────────────────────────────
