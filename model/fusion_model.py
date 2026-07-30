@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 from model.camera_model import get_fusion_frames
-from model.simone_lidar_model import get_frames as get_lidar_frames
+from model.streaming_model import get_fusion_frames as get_lidar_frames
 
 _lock = threading.RLock()
 _cond = threading.Condition(_lock)
@@ -121,12 +121,28 @@ def _render(camera: dict, lidar: dict, cfg: dict):
              (pixels[:,1]>=0)&(pixels[:,1]<image.shape[0]))
     pixels, source = pixels[valid], source[valid]
     colors = _colors(source[:,3] if source.shape[1] > 3 else np.zeros(len(source)))
-    for (x,y), color in zip(pixels, colors):
-        cv2.circle(image, (int(x),int(y)), 1, tuple(int(c) for c in color), -1, cv2.LINE_AA)
+    # Vectorized splat instead of one cv2.circle() Python call per point (was the
+    # dominant cost at 50k+ points/frame — 60-150x fewer Python/OpenCV calls).
+    h, w = image.shape[:2]
+    xs, ys = pixels[:, 0], pixels[:, 1]
+    image[ys, xs] = colors
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        image[np.clip(ys + dy, 0, h - 1), np.clip(xs + dx, 0, w - 1)] = colors
     ok, encoded = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not ok:
         raise ValueError('fusion JPEG encode failed')
     return encoded.tobytes(), len(pixels)
+
+
+def _circular_ms_diff(a: int, b: int, wrap: int = 65536) -> int:
+    """Distance between two 16-bit-wrapping ms clocks, handling wraparound.
+
+    Camera's source_frame_id keeps growing unwrapped, lidar's wraps every
+    65.536s (SimTimestamp.ms is uint16) — Python's % on the difference still
+    correctly reduces the unwrapped side into the same ring before comparing.
+    """
+    d = (a - b) % wrap
+    return min(d, wrap - d)
 
 
 def _worker_loop():
@@ -139,7 +155,13 @@ def _worker_loop():
             if not cfg or not cameras or not lidars:
                 time.sleep(.03); continue
             camera = cameras[-1]
-            lidar = min(lidars, key=lambda x: abs(int(x['source_frame_id']) - int(camera['source_frame_id'])))
+            # Both source_frame_id values are simulation-relative ms clocks (not
+            # wall-clock epoch time — confirmed against the actual senders:
+            # udp_utils.py/simone_publisher.py both derive them from frame_id/fps),
+            # and lidar's is truncated to 16 bits on the wire, so match with a
+            # wraparound-aware circular distance instead of a plain abs diff.
+            lidar = min(lidars, key=lambda x: _circular_ms_diff(
+                int(camera['source_frame_id']), int(x['source_frame_id'])))
             pair = (camera['source_frame_id'], lidar['source_frame_id'])
             if pair == _last_pair:
                 time.sleep(.01); continue

@@ -250,10 +250,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/streaming_ensure':
             try:
                 from config import config as _cfg
-                from model.simone_lidar_model import start as lidar_start
-                self._json({'started': True, **lidar_start(
-                    _cfg.streaming_udp_host, _cfg.streaming_udp_port,
-                    _cfg.streaming_info_port)})
+                self._json(streaming_ensure_started(
+                    _cfg.streaming_udp_port, _cfg.streaming_udp_host,
+                    _cfg.streaming_info_port))
             except Exception as e:
                 self._json({'started': False, 'error': str(e)})
 
@@ -261,8 +260,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(streaming_get_status())
 
         elif path == '/api/streaming_receiver_config':
-            from model.simone_lidar_model import get_status as lidar_status
-            self._json(lidar_status())
+            self._json(streaming_get_receiver_config())
 
         elif path == '/api/streaming_frame':
             self._handle_streaming_frame(params)
@@ -272,8 +270,7 @@ class Handler(BaseHTTPRequestHandler):
                 host      = params.get('ip',        ['127.0.0.1'])[0] or '127.0.0.1'
                 port      = int(params.get('port',      ['6699'])[0])
                 info_port = int(params.get('info_port', ['7788'])[0])
-                from model.simone_lidar_model import start as lidar_start
-                self._json({'ok': True, **lidar_start(host, port, info_port)})
+                self._json({'ok': True, **streaming_rebind_udp(host, port, info_port)})
             except (ValueError, IndexError):
                 self._json({'ok': False, 'error': 'invalid ip or port'})
             except Exception as e:
@@ -317,12 +314,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/fusion_ensure':
             try:
                 from model.camera_model import start_udp_listener as cam_start
-                from model.simone_lidar_model import start as lidar_start
-                lidar_start(params.get('lidar_ip', ['10.66.8.44'])[0],
-                            int(params.get('lidar_port', ['6699'])[0]),
-                            int(params.get('info_port', ['7788'])[0]))
+                streaming_rebind_udp(
+                    params.get('lidar_ip', ['10.66.8.143'])[0],
+                    int(params.get('lidar_port', ['6699'])[0]),
+                    int(params.get('info_port', ['7788'])[0]))
                 cam_start(port=int(params.get('camera_port', ['13956'])[0]),
-                          host=params.get('camera_ip', ['10.66.8.44'])[0])
+                          host=params.get('camera_ip', ['10.66.8.143'])[0])
                 self._json({'ok': True})
             except Exception as e:
                 self._json({'ok': False, 'error': str(e)})
@@ -737,7 +734,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_camera_ensure(self, params):
         try:
-            host = params.get('ip', ['10.66.8.44'])[0] or '10.66.8.44'
+            host = params.get('ip', ['10.66.8.143'])[0] or '10.66.8.143'
             port = int(params.get('port', ['9870'])[0])
             from model.camera_model import start_udp_listener as cam_start, get_status as cam_status
             cam_start(port=port, host=host)
@@ -747,7 +744,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_camera_rebind(self, params):
         try:
-            host = params.get('ip', ['10.66.8.44'])[0] or '10.66.8.44'
+            host = params.get('ip', ['10.66.8.143'])[0] or '10.66.8.143'
             port = int(params.get('port', ['9870'])[0])
             from model.camera_model import rebind as cam_rebind
             self._json({'ok': True, **cam_rebind(host, port)})

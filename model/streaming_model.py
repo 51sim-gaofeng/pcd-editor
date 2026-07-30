@@ -20,6 +20,7 @@ import struct
 import threading
 import time
 import queue
+from collections import deque
 
 import numpy as np
 
@@ -85,6 +86,8 @@ _sm_last_src_host: str = ''
 _sm_last_src_port: int  = 0
 _sm_running: bool   = False
 
+_sm_fusion_frames = deque(maxlen=30)
+
 _sm_vert_angles: np.ndarray = np.empty(0, dtype=np.float32)
 _sm_vert_lut: np.ndarray = np.empty(0, dtype=np.int32)
 _sm_channels: int = 64
@@ -147,6 +150,21 @@ _blk_range = np.arange(_BLOCKS_PER_PKT,    dtype=np.int32)   # [0..11]
 # Each block: 2-byte mFlag then 14 × 7-byte SimOneMSOPPoint.
 _custom_pt_offsets = 2 + np.arange(_MAXPOINT_IN_BLOCK, dtype=np.int32) * _MSOP_POINT_SIZE
 _custom_abs = _blk_starts[:, None] + _custom_pt_offsets[None, :]  # (12, 14)
+
+_HDR_OFF_TIMESTAMP_MS = 26  # uint16_t, SimTimestamp.ms
+
+
+def _decode_sim_frame_ms(data: bytes) -> int:
+    """Read SimMsopHeader's SimTimestamp.ms (16-bit, wraps every 65.536s).
+
+    simone_publisher.py fills year/month/day/hour/minute/second with the real
+    wall-clock send time (time.gmtime()), but ms/us come from a *different*,
+    simulation-relative clock (frame_id * 1e9 / hz) — the two are not on the
+    same timeline, so only the ms/us pair is usable for camera/lidar frame
+    alignment; the civil-time fields are cosmetic and must not be combined in.
+    """
+    ms, = struct.unpack_from('<H', data, _HDR_OFF_TIMESTAMP_MS)
+    return ms
 
 
 # ── DIFOP decoder ─────────────────────────────────────────────────────────────
@@ -306,7 +324,7 @@ def _sm_frame_to_binary(frame_id: int, points: np.ndarray,
     return header + points.tobytes()
 
 
-def _store_frame(points: np.ndarray, frame_id: int) -> None:
+def _store_frame(points: np.ndarray, frame_id: int, sim_frame_ms: int | None = None) -> None:
     """Downsample, pack and store a decoded frame; notify WS clients."""
     global _sm_frame, _sm_frame_id, _sm_recv_count, _sm_last_ts
     global _sm_proc_ms_total, _sm_ds_ms_total, _sm_out_bytes_total
@@ -329,6 +347,7 @@ def _store_frame(points: np.ndarray, frame_id: int) -> None:
     binary = _sm_frame_to_binary(frame_id, points, t_store_ms)
     proc_ms = (time.perf_counter() - t0) * 1000.0
 
+    sim_ms = sim_frame_ms if sim_frame_ms is not None and sim_frame_ms >= 0 else (t_store_ms & 0xFFFF)
     with _sm_cond:
         _sm_frame      = binary
         _sm_frame_id   = frame_id
@@ -337,7 +356,16 @@ def _store_frame(points: np.ndarray, frame_id: int) -> None:
         _sm_proc_ms_total   += proc_ms
         _sm_ds_ms_total     += ds_ms
         _sm_out_bytes_total += len(binary)
+        _sm_fusion_frames.append({
+            'source_frame_id': sim_ms,  # 16-bit, wraps every 65.536s (see _decode_sim_frame_ms)
+            'points': points,
+        })
         _sm_cond.notify_all()
+
+
+def get_fusion_frames() -> list:
+    with _sm_cond:
+        return list(_sm_fusion_frames)
 
 
 def ingest_official_frame(points: np.ndarray, frame_id: int) -> None:
@@ -465,6 +493,7 @@ def _udp_listener_thread(host: str, port: int, stop_evt: threading.Event) -> Non
     stat_enqueued_frames = 0
     stat_queue_drops = 0
     scan_last_pkt_id = None
+    scan_frame_ms = -1
 
     def _emit_stats(now: float) -> None:
         nonlocal last_stat_t, last_stat_frame
@@ -563,8 +592,9 @@ def _udp_listener_thread(host: str, port: int, stop_evt: threading.Event) -> Non
                 stat_msop_end_flags += 1
                 stat_scan_packet_total += len(scan_packets)
                 frame_counter += 1
+                scan_frame_ms = _decode_sim_frame_ms(data)  # last packet's embedded sim clock (wraps every 65.536s)
                 if scan_packets and decode_queue is not None:
-                    frame_item = (frame_counter, tuple(scan_packets))
+                    frame_item = (frame_counter, scan_frame_ms, tuple(scan_packets))
                     try:
                         decode_queue.put_nowait(frame_item)
                         stat_enqueued_frames += 1
@@ -609,7 +639,7 @@ def _decode_worker_thread(stop_evt: threading.Event) -> None:
         if decode_queue is None:
             return
         try:
-            frame_id, scan_packets = decode_queue.get(timeout=0.5)
+            frame_id, scan_frame_ms, scan_packets = decode_queue.get(timeout=0.5)
         except queue.Empty:
             continue
         try:
@@ -618,7 +648,7 @@ def _decode_worker_thread(stop_evt: threading.Event) -> None:
             decode_ms = (time.perf_counter() - t_dec0) * 1000.0
             if len(points) > 0:
                 t_store0 = time.perf_counter()
-                _store_frame(points, frame_id)
+                _store_frame(points, frame_id, scan_frame_ms)
                 store_ms = (time.perf_counter() - t_store0) * 1000.0
                 win_decoded += 1
                 win_decode_ms += decode_ms
