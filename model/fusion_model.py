@@ -69,8 +69,19 @@ def configure(camera: dict, lidar: dict) -> dict:
     if matrix is None:
         fx = float(_value(derived, 'fx_px', 'focalLengthX', default=width))
         fy = float(_value(derived, 'fy_px', 'focalLengthY', default=fx))
-        cx = float(_value(derived, 'cx_px', 'offsetCx', default=width / 2))
-        cy = float(_value(derived, 'cy_px', 'offsetCy', default=height / 2))
+        # cx_px/cy_px are absolute OpenCV pixel coordinates. For compatibility,
+        # offsetCx/offsetCy are also absolute coordinates, except that zero means
+        # "not configured" and falls back to the image center.
+        if derived.get('cx_px') is not None:
+            cx = float(derived['cx_px'])
+        else:
+            offset_cx = float(_value(derived, 'offsetCx', default=0.0))
+            cx = width / 2.0 if offset_cx == 0.0 else offset_cx
+        if derived.get('cy_px') is not None:
+            cy = float(derived['cy_px'])
+        else:
+            offset_cy = float(_value(derived, 'offsetCy', default=0.0))
+            cy = height / 2.0 if offset_cy == 0.0 else offset_cy
         matrix = [[fx,0,cx],[0,fy,cy],[0,0,1]]
     distortion = intr.get('opencv_distortion_coefficients')
     if distortion is None:
