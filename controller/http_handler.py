@@ -714,16 +714,18 @@ class Handler(BaseHTTPRequestHandler):
             after_id = int(params.get('after', ['-1'])[0])
         except (ValueError, IndexError):
             after_id = -1
-        from model.camera_model import get_latest_frame_blocking as cam_frame
+        from model.camera_model import get_latest_frame_blocking as cam_frame, get_status as cam_status
         fid, source_fid, jpeg = cam_frame(after_id, timeout=2.0)
         if jpeg is None:
             self._json({'frame_id': fid, 'source_frame_id': source_fid, 'changed': False})
             return
+        display_fid = cam_status().get('display_frame_id', source_fid)
         try:
             self.send_response(200)
             self.send_header('Content-Type', 'image/jpeg')
             self.send_header('X-Frame-Id', str(fid))
             self.send_header('X-Source-Frame-Id', str(source_fid))
+            self.send_header('X-Display-Frame-Id', str(display_fid))
             self.send_header('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate')
             self.send_header('Pragma', 'no-cache')
             self.send_header('Content-Length', str(len(jpeg)))

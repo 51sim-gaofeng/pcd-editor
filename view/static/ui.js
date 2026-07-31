@@ -940,7 +940,7 @@ async function loadFileAbs(absPath){
 refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();_initWelcomeOnStartup();
 // 鈹€鈹€ Camera mode (GVSP UDP receiver) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 const _CAM_PCD_SECTIONS=['sec-file','sec-play','sec-streaming','sec-dds'];
-let _camMode=false,_camActive=false,_camLastId=-1,_camSourceFrameId=-1;
+let _camMode=false,_camActive=false,_camLastId=-1,_camSourceFrameId=-1,_camDisplayFrameId=-1;
 let _fusionMode=false,_fusionVehicleJson=null,_fusionSensors=[];
 let _fusionActive=false,_fusionLastSequence=-1,_fusionAbort=null,_fusionBlobUrl=null;
 let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0,_camLastBuf=null;
@@ -1284,7 +1284,7 @@ async function camConnect(){
     const r=await fetch('/api/camera_ensure?ip='+encodeURIComponent(ip)+'&port='+port);
     const d=await r.json();
     if(!d.started){setStatus('Camera connect failed: '+(d.error||'unknown'),'err');return;}
-    _camActive=true;_camLastId=-1;
+    _camActive=true;_camLastId=-1;_camDisplayFrameId=-1;
     _camResetRender();
     const btnC=document.getElementById('btn-cam-connect');if(btnC){btnC.innerHTML='&#9209; Stop';btnC.style.background='#dc2626';}
     const stEl=document.getElementById('cam-status');if(stEl){stEl.textContent='listening\u2026';stEl.style.color='#facc15';}
@@ -1305,10 +1305,13 @@ async function _camPollLoop(){
       if(ct.includes('json'))continue;
       const fid=parseInt(r.headers.get('x-frame-id')||'-1',10);
       const sourceFid=parseInt(r.headers.get('x-source-frame-id')||String(fid),10);
+      const displayFid=parseInt(r.headers.get('x-display-frame-id')||String(sourceFid),10);
       const buf=await r.arrayBuffer();
       if(buf.byteLength>0){
-        _camLastId=fid;_camSourceFrameId=sourceFid;
-        _camQueueFrame(sourceFid,buf);
+        _camLastId=fid;_camSourceFrameId=sourceFid;_camDisplayFrameId=displayFid;
+        // Show source_frame_id normally, but fall back to the GVSP block_id when
+        // source_frame_id is implausibly large (e.g. a mis-decoded simone3.x sender).
+        _camQueueFrame(displayFid,buf);
       }
     }catch(e){
       if(e.name==='AbortError')break;
@@ -1324,7 +1327,7 @@ async function _camPollLoop(){
   if(!wrap||typeof ResizeObserver==='undefined')return;
   new ResizeObserver(()=>{
     if(!_camMode||!_camLastBuf)return;
-    _camQueueFrame(_camSourceFrameId>=0?_camSourceFrameId:_camLastId,_camLastBuf);
+    _camQueueFrame(_camDisplayFrameId>=0?_camDisplayFrameId:_camLastId,_camLastBuf);
   }).observe(wrap);
 })();
 

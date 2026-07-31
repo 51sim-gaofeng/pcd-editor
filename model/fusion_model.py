@@ -8,7 +8,7 @@ import time
 import cv2
 import numpy as np
 
-from model.camera_model import get_fusion_frames
+from model.camera_model import get_fusion_frames, _SOURCE_FRAME_ID_TOO_LARGE
 from model.streaming_model import get_fusion_frames as get_lidar_frames
 
 _lock = threading.RLock()
@@ -171,9 +171,18 @@ def _worker_loop():
             # udp_utils.py/simone_publisher.py both derive them from frame_id/fps),
             # and lidar's is truncated to 16 bits on the wire, so match with a
             # wraparound-aware circular distance instead of a plain abs diff.
+            # Some senders (e.g. simone3.x) make camera['source_frame_id'] come out
+            # implausibly large (a mis-decoded timestamp — see camera_model.py's
+            # _display_frame_id/_SOURCE_FRAME_ID_TOO_LARGE). In that case matching
+            # against it would be meaningless, so fall back to the raw GVSP block_id
+            # (small, monotonic, ms-scale) for both the match key and the reported id.
+            camera_source_fid = int(camera['source_frame_id'])
+            camera_key = (camera.get('block_id', camera_source_fid)
+                          if camera_source_fid > _SOURCE_FRAME_ID_TOO_LARGE
+                          else camera_source_fid)
             lidar = min(lidars, key=lambda x: _circular_ms_diff(
-                int(camera['source_frame_id']), int(x['source_frame_id'])))
-            pair = (camera['source_frame_id'], lidar['source_frame_id'])
+                camera_key, int(x['source_frame_id'])))
+            pair = (camera_key, lidar['source_frame_id'])
             if pair == _last_pair:
                 time.sleep(.01); continue
             jpeg, projected = _render(camera, lidar, cfg)

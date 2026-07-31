@@ -36,6 +36,7 @@ _cam_cond = threading.Condition(_cam_lock)
 _cam_jpeg: bytes = b''
 _cam_frame_id: int = -1
 _cam_source_frame_id: int = -1
+_cam_block_id: int = -1  # raw GVSP block_id of the last completed frame (see _process_gvsp_packet)
 _cam_recv_count: int = 0
 _cam_last_ts: float = 0.0
 _cam_bind_host: str = '127.0.0.1'
@@ -70,6 +71,21 @@ def _format_bind_error(host: str, port: int, err: Exception) -> str:
     if isinstance(err, OSError) and getattr(err, 'winerror', None) in (10013, 10048):
         msg += ' (port may already be in use by another process)'
     return msg
+
+
+# source_frame_id is derived from the sender's GVSP Leader timestamp (see comment
+# below); some senders (e.g. simone3.x) encode it in a way our formula can't parse
+# correctly, producing an implausibly large value. When that happens, fall back to
+# displaying the raw GVSP block_id instead — it's not a clean +1-per-frame counter,
+# but it's still small, unique per frame and monotonic, so it's a better "frame
+# number" stand-in than a broken multi-trillion-ms timestamp.
+_SOURCE_FRAME_ID_TOO_LARGE = 100_000_000_000  # ~3.17 years in ms
+
+
+def _display_frame_id(source_fid: int, block_id: int) -> int:
+    if source_fid < 0:
+        return block_id
+    return block_id if source_fid > _SOURCE_FRAME_ID_TOO_LARGE else source_fid
 
 
 def _process_gvsp_packet(data: bytes) -> None:
@@ -116,14 +132,17 @@ def _process_gvsp_packet(data: bytes) -> None:
     if jpeg_ready:
         with _cam_cond:
             global _cam_jpeg, _cam_frame_id, _cam_source_frame_id, _cam_recv_count, _cam_last_ts
+            global _cam_block_id
             _cam_jpeg = jpeg_ready
             _cam_frame_id += 1
             sim_ns = leader_ns if leader_ns is not None and leader_ns >= 0 else time.time_ns()
             _cam_source_frame_id = int(sim_ns // 1_000_000)  # ms, for display/logging parity
+            _cam_block_id = block_id
             _cam_recv_count += 1
             _cam_last_ts = time.time()
             _cam_fusion_frames.append({
                 'source_frame_id': _cam_source_frame_id,
+                'block_id': _cam_block_id,
                 'jpeg': jpeg_ready,
             })
             _cam_cond.notify_all()
@@ -254,6 +273,8 @@ def get_status() -> dict:
             'recv_count': _cam_recv_count,
             'frame_id': _cam_frame_id,
             'source_frame_id': _cam_source_frame_id,
+            'block_id': _cam_block_id,
+            'display_frame_id': _display_frame_id(_cam_source_frame_id, _cam_block_id),
             'age_ms': age_ms,
         }
 
