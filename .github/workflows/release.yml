@@ -1,0 +1,147 @@
+name: Build & Release
+
+# Trigger: push a version tag like v0.1.2
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    permissions:
+      contents: write   # required to create/upload GitHub Releases
+    strategy:
+      fail-fast: false   # don't cancel the other platform if one fails
+      matrix:
+        include:
+          - os: windows-latest
+            bin_name: 51sim_sensor_viewer.exe
+            platform: windows-x64
+          - os: ubuntu-22.04
+            bin_name: 51sim_sensor_viewer
+            platform: linux-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true   # download Git LFS files (sample/*.pcd)
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Linux: tkinter (file-picker) + upx only; no webkit/gtk/gi needed
+      # (pywebview native window is Windows-only; Linux opens system browser)
+      # Build on ubuntu-22.04 (glibc 2.35) for compatibility
+      - name: Install system deps (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-tk upx-ucl
+
+      # pip numpy has no MKL dependency — keeps binary small (~20 MB)
+      # pywebview is Windows-only; skip on Linux to avoid gi bundling issues
+      - name: Install Python dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: pip install numpy pyinstaller pywebview pillow websockets
+
+      - name: Install Python dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: pip install numpy pyinstaller pillow websockets
+
+      - name: Generate app icon
+        run: python assets/generate_icon.py
+
+      - name: Build binary
+        run: python -m PyInstaller pcd_viewer.spec --clean --noconfirm
+
+      - name: Show binary size (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $mb = (Get-Item dist\51sim_sensor_viewer.exe).Length / 1MB
+          Write-Host "binary size: $([math]::Round($mb,1)) MB"
+
+      - name: Show binary size (Linux)
+        if: runner.os == 'Linux'
+        run: du -sh dist/51sim_sensor_viewer
+
+      - name: Smoke test
+        run: python test_smoke.py --exe
+
+      # ── Windows packaging ──────────────────────────────────────────────────
+      - name: Package binary-only zip (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Compress-Archive -Path dist\51sim_sensor_viewer.exe `
+            -DestinationPath dist\51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip
+
+      - name: Package binary + samples zip (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          # staging\ contains: 51sim_sensor_viewer.exe  +  sample\*.pcd
+          New-Item -ItemType Directory -Force -Path staging | Out-Null
+          Copy-Item dist\51sim_sensor_viewer.exe staging\
+          Copy-Item -Recurse sample staging\sample
+          Compress-Archive -Path staging\* `
+            -DestinationPath dist\51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip
+          Remove-Item -Recurse -Force staging
+
+      # ── Linux packaging ────────────────────────────────────────────────────
+      - name: Package binary-only zip (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd dist
+          zip 51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip 51sim_sensor_viewer
+
+      - name: Package binary + samples zip (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          # staging/ contains: 51sim_sensor_viewer  +  sample/*.pcd/*.ply
+          mkdir -p staging/sample
+          cp dist/51sim_sensor_viewer staging/
+          cp sample/*.pcd staging/sample/
+          cp sample/*.ply staging/sample/
+          cd staging
+          zip -r ../dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip .
+          cd ..
+          rm -rf staging
+
+      # ── Build .deb package (Linux only) ───────────────────────────────────
+      - name: Build .deb package (Linux)
+        if: runner.os == 'Linux'
+        run: python assets/build_deb.py ${{ github.ref_name }} dist/51sim_sensor_viewer
+
+      # Rename raw binary so it has a version-stamped name for direct download
+      - name: Rename binary for direct download (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cp dist/51sim_sensor_viewer dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}
+
+      # ── Upload to Release (both platforms write to the same release) ───────
+      - name: Upload to GitHub Release (Windows)
+        if: runner.os == 'Windows'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "${{ github.ref_name }}"
+          body_path: RELEASE_NOTES.md
+          generate_release_notes: false
+          files: |
+            dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip
+            dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip
+
+      - name: Upload to GitHub Release (Linux)
+        if: runner.os == 'Linux'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "${{ github.ref_name }}"
+          body_path: RELEASE_NOTES.md
+          generate_release_notes: false
+          files: |
+            dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}
+            dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}.zip
+            dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip
+            dist/51sim-sensor-viewer_*.deb

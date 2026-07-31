@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>51sim Sensor Data Viewer</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="topbar">
+  <div id="topbar-menu">
+    <div class="topbar-item">
+      <button class="topbar-btn" onclick="toggleTopbarMenu(this)">File</button>
+      <div class="topbar-dropdown">
+        <div class="topbar-option" onclick="closeTopbarMenus();pickFileNative()">&#128196; Open PCD File&#8230;</div>
+        <div class="topbar-option" onclick="closeTopbarMenus();pickDirNative()">&#128194; Open Directory&#8230;</div>
+        <div class="topbar-option" onclick="closeTopbarMenus();openPlyFromMenu()">&#127875; Open PLY (3DGS)&#8230;</div>
+        <div class="topbar-sep"></div>
+        <div class="topbar-option" onclick="closeTopbarMenus();savePcd()">&#128190; Save PCD&#8230;</div>
+      </div>
+    </div>
+    <div class="topbar-item">
+      <button class="topbar-btn" onclick="toggleTopbarMenu(this)">Help</button>
+      <div class="topbar-dropdown">
+        <div class="topbar-option" onclick="closeTopbarMenus();showHelpModal()">&#128214; User Guide&#8230;</div>
+        <div class="topbar-option" onclick="closeTopbarMenus();showWelcomeModal()">&#9000; Keyboard Shortcuts&#8230;</div>
+        <div class="topbar-option" onclick="closeTopbarMenus();showAboutModal()">&#8505; About&#8230;</div>
+      </div>
+    </div>
+  </div>
+  <div id="topbar-divider"></div>
+  <div id="viewport-toolbar">
+    <button class="vp-tool-btn" data-tool="view" onclick="toggleViewportPanel('view')" title="View settings">&#128065; View</button>
+    <button class="vp-tool-btn" data-tool="edit" onclick="toggleViewportPanel('edit')" title="Edit cloud tools">&#9986; Edit Cloud</button>
+    <button class="vp-tool-btn" data-tool="traj" onclick="toggleViewportPanel('traj')" title="Trajectory tools">&#9998; Trajectory</button>
+  </div>
+</div>
+<div id="main-row">
+<aside id="sidebar">
+  <div id="mode-tabs">
+    <button class="mode-tab active" id="tab-pcd" onclick="switchMode('pcd')">&#9729; Lidar</button>
+    <button class="mode-tab" id="tab-cam" onclick="switchMode('cam')">&#128247; Camera</button>
+    <button class="mode-tab" id="tab-fusion" onclick="switchMode('fusion')">&#128279; Fusion</button>
+    <button class="mode-tab" id="tab-gs"  onclick="switchMode('gs')">&#127875; 3DGS</button>
+  </div>
+  <div id="sidebar-scroll">
+  <details id="sec-file" open>
+    <summary>&#128194; File</summary>
+    <div class="sec">
+      <select class="full" id="file-select" onchange="onFileSelect(this.value)">
+        <option value="">&#8212; select file &#8212;</option>
+      </select>
+      <div class="grid2">
+        <button class="btn"       onclick="pickFileNative()">&#128196; Open File…</button>
+        <button class="btn"       onclick="pickDirNative()">&#128194; Open Dir…</button>
+      </div>
+      <button class="btn ghost full-w" onclick="refreshList()">&#8634; Refresh List</button>
+    </div>
+  </details>
+  <details id="sec-play">
+    <summary>&#9654; Playback</summary>
+    <div class="sec">
+      <div style="font-size:.7rem;color:#475569;text-align:center">Frame <span id="play-idx" style="color:#cbd5e1">0</span> / <span id="play-total">0</span></div>
+      <input type="range" id="play-seek" min="0" max="0" value="0" style="width:100%;accent-color:#34d399" oninput="playSeek(parseInt(this.value))">
+      <div class="grid3">
+        <button class="btn ghost" onclick="playStep(-1)" title="Prev (←)">&#9664; Prev</button>
+        <button class="btn"       id="btn-play" onclick="playToggle()">&#9654; Play</button>
+        <button class="btn ghost" onclick="playStep(1)" title="Next (→)">Next &#9654;</button>
+      </div>
+      <div class="row">
+        <span class="lbl">FPS</span>
+        <input type="range" id="play-fps" min="1" max="30" step="1" value="10" oninput="playSetFps(parseInt(this.value))" style="flex:1;accent-color:#34d399">
+        <span id="play-fps-val" style="width:26px;text-align:right;color:#cbd5e1">10</span>
+      </div>
+      <div class="row" style="gap:6px">
+        <span class="lbl" style="width:auto;white-space:nowrap">Max pts</span>
+        <input type="range" id="pcd-max-pts" min="10000" max="1000000" step="10000" value="300000"
+               style="flex:1;accent-color:#34d399"
+               oninput="pcdSetMaxPointsFromUI(this.value)">
+        <span id="pcd-max-pts-val" style="font-size:.65rem;color:#94a3b8;min-width:30px;text-align:right">300k</span>
+      </div>
+      <div style="font-size:.65rem;color:#334155;text-align:center">←→ step · Space play/pause</div>
+    </div>
+  </details>
+  <details id="sec-streaming" open>
+    <summary>&#128225; Streaming</summary>
+    <div class="sec">
+      <div class="row" style="justify-content:center">
+        <button class="btn" id="btn-streaming" onclick="streamingToggle()" title="Receive SimOne Streaming point cloud via UDP">&#x1F4E1; Streaming Live</button>
+        <button class="btn ghost" id="btn-streaming-pause" onclick="streamingPauseToggle()" title="暂停渲染（仍接收数据）" style="display:none">&#x23F8; Pause</button>
+        <span id="streaming-status" style="font-size:.65rem;color:#475569;margin-left:6px">off</span>
+      </div>
+      <div style="display:grid;grid-template-columns:auto 1fr auto 1fr;gap:5px;align-items:center;margin-top:6px">
+        <span style="font-size:.7rem;color:#64748b">IP</span>
+        <input type="text" id="streaming-bind-ip" value="127.0.0.1" placeholder="127.0.0.1" style="min-width:0;width:100%">
+        <span style="font-size:.7rem;color:#64748b">Port</span>
+        <input type="number" id="streaming-bind-port" min="1" max="65535" step="1" value="6699" style="min-width:0;width:100%">
+      </div>
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:5px;align-items:center;margin-top:3px">
+        <span style="font-size:.7rem;color:#64748b">Info Port</span>
+        <input type="number" id="streaming-info-port" min="1" max="65535" step="1" value="7788" placeholder="7788 (DIFOP)" style="min-width:0;width:100%">
+      </div>
+      <div class="grid2" style="margin-top:4px">
+        <button class="btn ghost" onclick="streamingApplyReceiverConfig()">Apply Receiver</button>
+        <button class="btn ghost" onclick="streamingRefreshReceiverConfig()">Refresh</button>
+      </div>
+      <div id="streaming-bind-status" style="font-size:.62rem;color:#64748b;text-align:center;margin-top:4px">bind: 127.0.0.1:6699 | info: 7788</div>
+      <div id="streaming-diag-status" style="font-size:.6rem;color:#475569;text-align:center;margin-top:2px;line-height:1.5"></div>
+      <hr style="border-color:#334155;margin:6px 0">
+      <div class="row" style="justify-content:center;margin-top:4px;gap:6px;align-items:center">
+        <span style="font-size:.65rem;color:#64748b;white-space:nowrap">Max pts</span>
+         <input type="range" id="streaming-max-pts" min="10000" max="1000000" step="10000" value="60000"
+               style="flex:1;accent-color:#a78bfa"
+               oninput="streamingSetMaxPointsFromUI(this.value)">
+         <span id="streaming-max-pts-val" style="font-size:.65rem;color:#94a3b8;min-width:30px">60k</span>
+      </div>
+      <div class="row" style="justify-content:center;margin-top:4px;gap:6px;align-items:center">
+        <span style="font-size:.65rem;color:#64748b;white-space:nowrap">Render FPS</span>
+        <input type="range" id="streaming-render-fps" min="1" max="30" step="1" value="10"
+               style="flex:1;accent-color:#c084fc"
+               oninput="streamingSetRenderFpsFromUI(this.value)">
+        <span id="streaming-render-fps-val" style="font-size:.65rem;color:#94a3b8;min-width:30px">10</span>
+      </div>
+      <div style="font-size:.6rem;color:#475569;margin-top:4px;text-align:center">
+        Protocol: MSOP (port) + DIFOP (info port) · SimOneDefault XYZI
+      </div>
+    </div>
+  </details>
+  <details id="sec-dds">
+    <summary>&#128225; DDS Receiver</summary>
+    <div class="sec">
+      <div class="row" style="justify-content:center">
+        <button class="btn" id="btn-dds" onclick="ddsToggle()" title="Receive live DDS point cloud via UDP">&#x1F4E1; DDS Live</button>
+        <button class="btn ghost" id="btn-dds-pause" onclick="ddsPauseToggle()" title="\u6682\u505c\u6e32\u67d3\uff08\u4ecd\u63a5\u6536\u6570\u636e\uff09" style="display:none">&#x23F8; Pause</button>
+        <span id="dds-status" style="font-size:.65rem;color:#475569;margin-left:6px">off</span>
+      </div>
+      <div style="display:grid;grid-template-columns:auto 1fr auto 1fr;gap:5px;align-items:center;margin-top:6px">
+        <span style="font-size:.7rem;color:#64748b">IP</span>
+        <input type="text" id="dds-bind-ip" value="255.255.255.255" placeholder="255.255.255.255" style="min-width:0;width:100%">
+        <span style="font-size:.7rem;color:#64748b">Port</span>
+        <input type="number" id="dds-bind-port" min="1" max="65535" step="1" value="9870" style="min-width:0;width:100%">
+      </div>
+      <div class="grid2" style="margin-top:4px">
+        <button class="btn ghost" onclick="ddsApplyReceiverConfig()">Apply Receiver</button>
+        <button class="btn ghost" onclick="ddsRefreshReceiverConfig()">Refresh</button>
+      </div>
+      <div id="dds-bind-status" style="font-size:.62rem;color:#64748b;text-align:center;margin-top:4px">bind: 255.255.255.255:9870</div>
+      <hr style="border-color:#334155;margin:6px 0">
+      <div class="row" style="justify-content:center;margin-top:4px;gap:6px;align-items:center">
+        <span style="font-size:.65rem;color:#64748b;white-space:nowrap">Max pts</span>
+        <input type="range" id="dds-max-pts" min="10000" max="1000000" step="10000" value="60000"
+               style="flex:1;accent-color:#3b82f6"
+               oninput="ddsSetMaxPointsFromUI(this.value)">
+        <span id="dds-max-pts-val" style="font-size:.65rem;color:#94a3b8;min-width:30px">60k</span>
+      </div>
+      <div class="row" style="justify-content:center;margin-top:4px;gap:6px;align-items:center">
+        <span style="font-size:.65rem;color:#64748b;white-space:nowrap">Render FPS</span>
+        <input type="range" id="dds-render-fps" min="1" max="30" step="1" value="10"
+               style="flex:1;accent-color:#34d399"
+               oninput="ddsSetRenderFpsFromUI(this.value)">
+        <span id="dds-render-fps-val" style="font-size:.65rem;color:#94a3b8;min-width:30px">10</span>
+      </div>
+      <div class="row" style="justify-content:center;margin-top:2px">
+        <label style="font-size:.65rem;color:#64748b;display:flex;align-items:center;gap:4px;cursor:pointer">
+          <input type="checkbox" id="dds-adaptive" checked onchange="ddsToggleAdaptive(this.checked)" style="accent-color:#34d399">
+          自适应点数预算（Foxglove风格）
+        </label>
+      </div>
+    </div>
+  </details>
+  <div id="sec-fusion" style="display:none">
+    <details open>
+      <summary>&#128663; Fusion Calibration</summary>
+      <div class="sec">
+        <input id="fusion-json-file" type="file" accept=".json,application/json"
+               style="display:none" onchange="fusionImportVehicleJson(this.files[0])">
+        <button class="btn ghost full-w"
+                onclick="document.getElementById('fusion-json-file').click()">
+          &#128194; Import Main Vehicle JSON
+        </button>
+        <div id="fusion-json-name" class="fusion-hint">No vehicle JSON imported</div>
+        <div class="fusion-picker-grid">
+          <label>Camera
+            <select id="fusion-camera-select" onchange="fusionSelectionChanged()">
+              <option value="">— select camera —</option>
+            </select>
+          </label>
+          <label>LiDAR
+            <select id="fusion-lidar-select" onchange="fusionSelectionChanged()">
+              <option value="">— select lidar —</option>
+            </select>
+          </label>
+        </div>
+        <details id="fusion-parameters">
+          <summary>Calibration Parameters</summary>
+          <div id="fusion-calibration-summary" class="fusion-summary">
+            Import the main-vehicle JSON to read sensor intrinsics and extrinsics.
+          </div>
+        </details>
+        <div class="fusion-endpoints">
+          <input id="fusion-lidar-ip" value="10.66.8.44" title="LiDAR IP">
+          <input id="fusion-lidar-port" type="number" value="6699" title="LiDAR port">
+          <input id="fusion-info-port" type="number" value="7788" title="DIFOP port">
+          <input id="fusion-camera-port" type="number" value="13956" title="Camera port">
+        </div>
+        <button class="btn full-w" id="fusion-start-btn" onclick="fusionStart()">&#128279; Apply &amp; Start Fusion</button>
+        <div id="fusion-run-status" class="fusion-hint">off</div>
+      </div>
+    </details>
+  </div>
+  <details id="sec-gs" open style="display:none">
+    <summary>&#127875; Gaussian Splatting</summary>
+    <div class="sec">
+      <div class="row">
+        <select class="full" id="gs-file-select" onchange="onGsFileSelect(this.value)">
+          <option value="">&#8212; select .ply file &#8212;</option>
+        </select>
+      </div>
+      <button class="btn ghost full-w" onclick="refreshGsList()">&#8634; Refresh List</button>
+      <div class="row" style="margin-top:6px">
+        <span class="lbl">SH</span>
+        <select id="gs-sh-level" style="flex:1" onchange="setGsShLevel(this.value)">
+          <option value="0">L0 (DC)</option>
+          <option value="1">L1</option>
+          <option value="2">L2</option>
+          <option value="3">L3</option>
+        </select>
+      </div>
+      <div class="row" style="gap:6px;margin-top:6px">
+        <span class="lbl" style="width:auto;white-space:nowrap">Max pts</span>
+        <input type="range" id="gs-max-pts" min="500000" max="20000000" step="100000" value="20000000"
+               style="flex:1;accent-color:#34d399"
+               oninput="gsSetMaxPointsFromUI(this.value)">
+        <span id="gs-max-pts-val" style="font-size:.65rem;color:#94a3b8;min-width:36px;text-align:right">20.0M</span>
+      </div>
+      <div style="font-size:.6rem;color:#334155">若加载后画面空白/控制台报 glTexStorage2D 错误，说明超出显卡纹理容量，调低后重新加载该文件</div>
+      <div class="row" style="justify-content:center;margin-top:4px;gap:6px;align-items:center">
+        <span style="font-size:.65rem;color:#64748b;white-space:nowrap">Render FPS</span>
+        <input type="range" id="gs-render-fps" min="1" max="60" step="1" value="30"
+               style="flex:1;accent-color:#fbbf24"
+               oninput="gsSetRenderFpsFromUI(this.value)">
+        <span id="gs-render-fps-val" style="font-size:.65rem;color:#94a3b8;min-width:20px">30</span>
+      </div>
+      <div class="grp" style="margin-top:6px">
+        <div class="grp-title">Model Rotation (deg)</div>
+        <div class="grid3">
+          <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Roll</span><input type="number" id="gs-roll" step="1" value="0" onchange="setGsRotationFromUi()"></label>
+          <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Pitch</span><input type="number" id="gs-pitch" step="1" value="0" onchange="setGsRotationFromUi()"></label>
+          <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Yaw</span><input type="number" id="gs-yaw" step="1" value="0" onchange="setGsRotationFromUi()"></label>
+        </div>
+        <div class="grid2" style="margin-top:4px">
+          <button class="btn ghost" onclick="setGsRotationFromUi()">Apply Rotation</button>
+          <button class="btn ghost" onclick="resetGsRotation()">Reset Rotation</button>
+        </div>
+      </div>
+      <!-- Color adjustments -->
+      <details style="margin-top:6px">
+        <summary style="font-size:.72rem;cursor:pointer;color:#94a3b8">&#127912; Color Adjust</summary>
+        <div style="display:grid;grid-template-columns:56px 1fr 32px;gap:3px 6px;align-items:center;margin-top:4px;font-size:.68rem;color:#94a3b8">
+          <span>Brightness</span>
+          <input type="range" id="gs-brightness" min="-100" max="100" value="0" oninput="setGsColor('brightness',this.value)">
+          <span id="gs-brightness-val" style="text-align:right">0</span>
+          <span>Contrast</span>
+          <input type="range" id="gs-contrast" min="0" max="200" value="100" oninput="setGsColor('contrast',this.value)">
+          <span id="gs-contrast-val" style="text-align:right">100</span>
+          <span>Saturation</span>
+          <input type="range" id="gs-saturation" min="0" max="200" value="100" oninput="setGsColor('saturation',this.value)">
+          <span id="gs-saturation-val" style="text-align:right">100</span>
+          <span>Temperature</span>
+          <input type="range" id="gs-temperature" min="-100" max="100" value="0" oninput="setGsColor('temperature',this.value)">
+          <span id="gs-temperature-val" style="text-align:right">0</span>
+          <span>Hue</span>
+          <input type="range" id="gs-hue" min="0" max="360" value="0" oninput="setGsColor('hueShift',this.value)">
+          <span id="gs-hue-val" style="text-align:right">0°</span>
+        </div>
+        <button class="btn ghost full-w" style="margin-top:4px;font-size:.65rem" onclick="resetGsColor()">&#8634; Reset Colors</button>
+      </details>
+      <div id="gs-loading" style="display:none;font-size:.65rem;color:#38bdf8;text-align:center;margin-top:4px">loading</div>
+      <div id="gs-load-ms" style="font-size:.62rem;color:#64748b;text-align:center">load: -- ms</div>
+      <div id="gs-info" style="font-size:.65rem;color:#64748b;margin-top:4px;text-align:center">idle</div>
+    </div>
+  </details>
+  <details id="sec-camera" open style="display:none">
+    <summary>&#128247; Camera Receiver</summary>
+    <div class="sec">
+      <div style="display:grid;grid-template-columns:auto 1fr auto 1fr;gap:5px;align-items:center">
+        <span style="font-size:.7rem;color:#64748b">Bind IP</span>
+        <input type="text" id="cam-ip" value="10.66.8.44" placeholder="10.66.8.44" style="min-width:0;width:100%">
+        <span style="font-size:.7rem;color:#64748b">Port</span>
+        <input type="number" id="cam-port" min="1" max="65535" step="1" value="13956" style="min-width:0;width:100%">
+      </div>
+      <div class="row" style="justify-content:center">
+        <button class="btn" id="btn-cam-connect" onclick="camConnect()">&#128279; Connect</button>
+        <span id="cam-status" style="font-size:.65rem;color:#475569;margin-left:6px">off</span>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;justify-content:center;font-size:.68rem;color:#cbd5e1;margin-top:4px">
+        <input type="checkbox" id="cam-show-fps" checked onchange="camToggleFps(this.checked)" style="accent-color:#ec4899">
+        Show FPS badge
+      </label>
+      <div id="cam-bind-status" style="font-size:.62rem;color:#64748b;text-align:center;margin-top:2px">bind: 10.66.8.44:13956</div>
+    </div>
+  </details>
+  <div style="flex:1;min-height:8px"></div>
+  </div><!-- #sidebar-scroll -->
+  <div id="status-bar">
+    <div id="status">idle</div>
+    <div id="info"></div>
+  </div>
+</aside>
+<div id="resize-handle"><button id="sidebar-toggle" title="Toggle sidebar (B)" onclick="toggleSidebar()">&#9664;</button></div>
+  <div id="canvas-wrap">
+    <div id="viewport-panel">
+      <div class="vp-panel-bar">
+        <span id="vp-panel-title">View</span>
+        <button class="vp-panel-close" onclick="closeViewportPanel()" title="Collapse">&#10005;</button>
+      </div>
+      <div class="vp-panel-body">
+        <div class="vp-page" id="sec-view">
+          <!-- Camera -->
+          <div class="grp">
+            <div class="grp-title">Camera</div>
+            <div class="grid4">
+              <button class="view-btn active" id="view-3d"    onclick="setView('3d')">3D</button>
+              <button class="view-btn"        id="view-top"   onclick="setView('top')">Top</button>
+              <button class="view-btn"        id="view-front" onclick="setView('front')">Front</button>
+              <button class="view-btn"        id="view-left"  onclick="setView('left')">Left</button>
+            </div>
+            <button class="btn full-w" id="view-free" onclick="setView('free')" title="Free fly: WASD move, QE up/down, mouse look, Shift boost, Esc exit (F)">&#9992; Free Fly (F)</button>
+            <button class="btn ghost full-w" onclick="resetCamera()">&#x2316; Reset Camera</button>
+          </div>
+
+          <!-- Points -->
+          <div class="grp">
+            <div class="grp-title">Points</div>
+            <div class="row">
+              <span class="lbl">Size</span>
+              <input type="range" id="pt-size" min="0.5" max="5" step="0.5" value="1.5" oninput="updatePointSize(this.value)">
+              <span id="pt-size-val" style="width:26px;text-align:right;color:#cbd5e1">1.5</span>
+            </div>
+            <div class="row">
+              <span class="lbl">Color</span>
+              <select id="color-mode" onchange="applyColorMode(this.value)" style="flex:1">
+                <option value="height">Height (Z)</option>
+                <option value="intensity">Intensity</option>
+                <option value="flat">Flat</option>
+              </select>
+            </div>
+            <div class="row" id="z-lock-row">
+              <button id="z-lock-btn" class="btn ghost" onclick="toggleZLock()" title="Lock/unlock height color range" style="font-size:.62rem;padding:2px 8px">&#128275; Lock Z</button>
+              <span id="z-lock-indicator" style="font-size:.6rem;color:#64748b;flex:1">auto per-frame</span>
+            </div>
+            <div class="row">
+              <span class="lbl">Flip</span>
+              <label><input type="checkbox" id="flip-x" onchange="applyFlip()"> X</label>
+              <label><input type="checkbox" id="flip-y" onchange="applyFlip()"> Y</label>
+              <label><input type="checkbox" id="flip-z" onchange="applyFlip()"> Z</label>
+            </div>
+          </div>
+
+          <!-- Filter Z -->
+          <div class="grp">
+            <div class="grp-title">Filter Z</div>
+            <div class="grid2">
+              <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Min</span><input type="number" id="flt-zmin" step="0.1" value="0" oninput="applyHeightFilter()"></label>
+              <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Max</span><input type="number" id="flt-zmax" step="0.1" value="1" oninput="applyHeightFilter()"></label>
+            </div>
+            <div class="grid3">
+              <button class="seg-btn active" id="flt-keep" onclick="setFilterMode('keep')">Keep</button>
+              <button class="seg-btn"        id="flt-excl" onclick="setFilterMode('exclude')">Exclude</button>
+              <button class="btn ghost" onclick="resetHeightFilter()">Reset</button>
+            </div>
+          </div>
+
+          <!-- Grid -->
+          <div class="grp">
+            <div class="grp-title">Grid</div>
+            <div class="row">
+              <label style="flex:1"><input type="checkbox" id="grid-show" checked onchange="applyGrid()"> Show</label>
+              <label class="row" style="gap:4px;flex:1;justify-content:flex-end">
+                <span style="font-size:.7rem;color:#64748b">Style</span>
+                <select id="grid-style" onchange="applyGrid()" style="flex:0 0 auto">
+                  <option value="square">Square</option>
+                  <option value="circle">Circle</option>
+                </select>
+              </label>
+            </div>
+            <div class="grid2">
+              <label class="row" style="gap:3px"><span style="font-size:.7rem;color:#64748b">Size</span><input type="number" id="grid-size" value="200" min="1" max="10000" step="10" onchange="applyGrid()"></label>
+              <label class="row" style="gap:3px" title="cell size (m)"><span style="font-size:.7rem;color:#64748b">Step</span><input type="number" id="grid-step" value="1" min="0.1" max="100" step="0.5" onchange="applyGrid()"></label>
+            </div>
+            <div class="row" style="margin-top:4px">
+              <label class="row" style="gap:3px;flex:1" title="坐标标签间隔 (m)"><span style="font-size:.7rem;color:#64748b">Label</span><input type="number" id="grid-label-step" value="10" min="0.5" max="1000" step="1" onchange="applyGrid()" style="flex:1;min-width:0"><span style="font-size:.65rem;color:#475569">m</span></label>
+            </div>
+          </div>
+        </div>
+        <div class="vp-page" id="sec-traj" style="display:none">
+          <div class="grid2">
+            <button class="btn" id="btn-pick" onclick="togglePick()" title="Inspect point">&#128269; Pick</button>
+            <button class="btn" id="btn-draw" onclick="toggleDraw()" title="Place waypoints">&#9998; Draw</button>
+          </div>
+          <div class="row">
+            <span class="lbl">Z def</span>
+            <input type="number" id="wp-z" step="0.01" value="0.00" style="flex:1">
+            <span id="traj-count" style="font-size:.7rem;color:#94a3b8;width:50px;text-align:right">0 pts</span>
+          </div>
+          <div class="grid2">
+            <button class="btn ghost" onclick="trajUndo()">&#x21A9; Undo</button>
+            <button class="btn ghost" onclick="trajClear()">&#10005; Clear</button>
+          </div>
+          <div class="grp">
+            <div class="grp-title">I/O</div>
+            <div class="grid2">
+              <button class="btn" onclick="trajExport()">&#8595; Export</button>
+              <label class="btn" style="cursor:pointer;text-align:center">&#8593; Import<input type="file" id="traj-import" accept=".json" style="display:none" onchange="trajImport(this)"></label>
+            </div>
+            <div class="grid2">
+              <button class="btn" onclick="trajSaveServer()">&#128190; Save</button>
+              <button class="btn ghost" onclick="refreshTrajList()">&#8634; Reload</button>
+            </div>
+            <select class="full" id="traj-server-list" onchange="trajLoadServer(this.value)">
+              <option value="">&#8212; server trajs &#8212;</option>
+            </select>
+          </div>
+        </div>
+        <div class="vp-page" id="sec-edit" style="display:none">
+          <div class="grid2">
+            <button class="btn" id="btn-edit-pick" onclick="togglePick()" title="Inspect point (double-click viewer to toggle)">&#128269; Pick</button>
+            <span></span>
+          </div>
+          <div class="grid2">
+            <button class="btn" id="btn-lasso"  onclick="toggleLasso()"  title="Freehand select region">&#9986; Lasso</button>
+            <button class="btn" id="btn-eraser" onclick="toggleEraser()" title="Brush select points">&#9711; Eraser</button>
+          </div>
+          <div class="row">
+            <span class="lbl">Radius</span>
+            <input type="range" id="eraser-r" min="5" max="80" step="5" value="20" oninput="updateEraserRadius(this.value)">
+            <span id="eraser-r-val" style="width:26px;text-align:right;color:#cbd5e1">20</span>
+          </div>
+          <div class="grid2">
+            <button class="btn danger" onclick="deleteSelected()">&#10005; Delete <span id="sel-count"></span></button>
+            <button class="btn ghost"  id="edit-undo-btn" style="display:none" onclick="undoDelete()">&#x21A9; Undo</button>
+          </div>
+          <div class="grid2">
+            <button class="btn ghost" onclick="clearSelection()">Deselect</button>
+            <button class="btn"       onclick="savePcd()">&#128190; Save PCD</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="camera-wrap">
+      <div id="cam-no-signal" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;pointer-events:none">
+        <span style="font-size:2.5rem">&#128247;</span>
+        <span style="font-size:1rem;color:#374151">Switch to Camera mode and connect</span>
+      </div>
+      <div id="cam-fps-badge" style="display:none"></div>
+      <canvas id="camera-canvas" style="display:none"></canvas>
+      <img id="camera-img" alt="" style="width:100%;height:100%;object-fit:contain;display:none">
+    </div>
+    <div id="fusion-wrap">
+      <div class="fusion-empty">
+        <span style="font-size:2.5rem">&#128279;</span>
+        <span>Import vehicle JSON to configure fusion calibration</span>
+      </div>
+      <img id="fusion-img" alt="Fusion calibration" style="width:100%;height:100%;object-fit:contain;display:none">
+      <div id="fusion-badge"></div>
+    </div>
+  <div id="overlay" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;pointer-events:none">
+    <span style="font-size:2.5rem">&#9729;</span>
+    <span style="font-size:1rem;color:#374151">Select a PCD file</span>
+  </div>
+  <div id="gs-overlay" style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;flex-direction:column;gap:14px;pointer-events:none;background:transparent;opacity:0.35">
+    <span style="font-size:1.05rem;color:#cbd5e1;font-weight:500">Drop a .ply file here to load</span>
+    <span style="font-size:.75rem;color:#94a3b8">or select a file from the left panel</span>
+  </div>
+  <canvas id="cv"></canvas>
+  <canvas id="lasso-canvas"></canvas>
+  <div id="traj-hint"   class="hint">Draw mode &#8212; click to place waypoints &nbsp;<button onclick="exitAllModes()" style="background:rgba(255,255,255,.15);border:none;color:inherit;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:.75rem">&#10005; Exit</button></div>
+  <div id="pick-hint"   class="hint">Pick mode &#8212; click on a point to inspect &nbsp;<button onclick="exitAllModes()" style="background:rgba(255,255,255,.15);border:none;color:inherit;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:.75rem">&#10005; Exit</button></div>
+  <div id="lasso-hint"  class="hint">Lasso &#8212; drag to select &nbsp;<button onclick="exitAllModes()" style="background:rgba(255,255,255,.15);border:none;color:inherit;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:.75rem">&#10005; Exit</button> &nbsp;<span style="opacity:.65;font-size:.7rem">ESC</span></div>
+  <div id="eraser-hint" class="hint">Eraser &#8212; drag to brush-erase &nbsp;<button onclick="exitAllModes()" style="background:rgba(255,255,255,.15);border:none;color:inherit;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:.75rem">&#10005; Exit</button> &nbsp;<span style="opacity:.65;font-size:.7rem">ESC</span></div>
+  <div id="free-hint"   class="hint" style="display:none">Free fly &#8212; <b>Hold RMB</b> to look &nbsp;<b>WASD</b> move &nbsp;<b>QE</b> down/up &nbsp;<b>Wheel</b> speed &nbsp;<b>Shift</b> boost &nbsp;<b>Esc/F</b> exit</div>
+  <div id="pick-popup" class="popup"></div>
+  <div id="wp-popup"   class="popup">
+    <div id="wp-popup-content"></div>
+    <div style="margin-top:8px;border-top:1px solid #334155;padding-top:6px;display:flex;gap:6px">
+      <button class="btn danger" style="font-size:.7rem;padding:2px 8px" onclick="wpDelete(window._wpPopupIdx)">&#128465; Delete</button>
+      <button class="btn ghost"  style="font-size:.7rem;padding:2px 8px" onclick="hideWpPopup()">&#10005; Close</button>
+    </div>
+  </div>
+  <div id="axes-label">
+    <span style="color:#ef4444">&#9632; X</span>
+    <span style="color:#22c55e">&#9632; Y</span>
+    <span style="color:#3b82f6">&#9632; Z</span>
+  </div>
+</div>
+</div><!-- #main-row -->
+<div id="log-panel">
+  <div id="log-resize-bar"></div>
+  <div id="log-panel-bar">
+    <span id="log-panel-title">&#128221; Log</span>
+    <button id="log-panel-clear" onclick="clearLog()" title="Clear log">&#10005; Clear</button>
+    <button id="log-panel-toggle" onclick="toggleLogPanel()" title="Toggle log (L)">&#9650; Hide</button>
+  </div>
+  <div id="log-entries"></div>
+</div>
+<div id="dir-modal-overlay" onclick="if(event.target===this)closeDirModal()">
+  <div id="dir-modal">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <h2>&#128193; Browse Directory</h2>
+      <button class="btn ghost" onclick="closeDirModal()" style="padding:2px 8px;font-size:.8rem">&#10005;</button>
+    </div>
+    <div id="dir-modal-cwd" style="font-size:.68rem;color:#475569"></div>
+    <div class="row" style="gap:5px">
+      <input type="text" id="dir-path-input" placeholder="Directory path…" onkeydown="if(event.key==='Enter')browseDirInput()">
+      <button class="btn ghost" style="padding:3px 9px" onclick="browseDirInput()">Go</button>
+      <button class="btn ghost" style="padding:3px 9px" title="Parent directory" onclick="browseUp()">&#8593; Up</button>
+      <button class="btn ghost" style="padding:3px 9px" title="弹出系统选择文件夹对话框" onclick="pickDirNative()">&#128194; Pick…</button>
+      <button class="btn ghost" style="padding:3px 9px" title="在资源管理器中打开当前目录" onclick="openInExplorer()">&#128221; Explorer</button>
+    </div>
+    <div id="dir-list"></div>
+  </div>
+</div>
+<div id="about-modal-overlay" onclick="if(event.target===this)closeAboutModal()">
+  <div id="about-modal">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <h2>&#8505; About</h2>
+      <button class="btn ghost" onclick="closeAboutModal()" style="padding:2px 8px;font-size:.8rem">&#10005;</button>
+    </div>
+    <div id="about-body" style="font-size:.78rem;color:#cbd5e1;line-height:2">loading&#8230;</div>
+    <div style="display:flex;justify-content:flex-end">
+      <button class="btn ghost" onclick="closeAboutModal()">Close</button>
+    </div>
+  </div>
+</div>
+<div id="help-modal-overlay" onclick="if(event.target===this)closeHelpModal()">
+  <div id="help-modal">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <h2>&#128214; User Guide</h2>
+      <button class="btn ghost" onclick="closeHelpModal()" style="padding:2px 8px;font-size:.8rem">&#10005;</button>
+    </div>
+    <div id="help-tabs">
+      <button class="help-tab active" id="help-tab-lidar"  onclick="helpShowTab('lidar')">&#9729; Lidar</button>
+      <button class="help-tab"        id="help-tab-camera" onclick="helpShowTab('camera')">&#128247; Camera</button>
+      <button class="help-tab"        id="help-tab-gs"     onclick="helpShowTab('gs')">&#127875; 3DGS</button>
+    </div>
+    <div id="help-body">
+      <div class="help-page" id="help-page-lidar">
+        <h3>Static PCD files</h3>
+        <p>Use <b>File &#8594; Open PCD File&#8230;</b> or <b>Open Directory&#8230;</b> (also available in the sidebar <b>File</b> section) to load <code>.pcd</code> files. ASCII, binary, and <code>binary_compressed</code> formats are all supported, with disk caching for fast reloads.</p>
+        <ul>
+          <li><b>Playback</b>: seek bar, FPS slider, <span class="wm-key" style="min-width:auto">&#8592;/&#8594;</span> step, <span class="wm-key" style="min-width:auto">Space</span> play/pause.</li>
+          <li><b>View</b>: 3D / Top / Front / Left presets, Free-fly camera (<span class="wm-key" style="min-width:auto">F</span>), point size, color mode (height / intensity / flat), axis flip.</li>
+          <li><b>Filter Z</b>: keep or exclude a height range.</li>
+          <li><b>Grid</b>: square or circular ground grid with configurable size, step, and coordinate labels.</li>
+          <li><b>Edit Cloud</b>: Pick / Lasso / Eraser to select points, then Delete, Undo, or <b>Save PCD</b>.</li>
+          <li><b>Trajectory</b>: Draw waypoints on the cloud, then Export / Import / Save to server.</li>
+        </ul>
+        <h3>Streaming Lidar Receiver</h3>
+        <p>Real-time Velodyne-style MSOP/DIFOP UDP ingestion with multi-threaded decode (separate network I/O and decode threads). Set the bind IP/port and DIFOP info port, then click <b>Streaming Live</b> to start. Use <b>Max pts</b> and <b>Render FPS</b> sliders to trade off density vs. smoothness; <span class="wm-key" style="min-width:auto">Space</span> pauses rendering without stopping reception.</p>
+        <h3>DDS Live</h3>
+        <p>Live UDP point cloud over a compact binary protocol, pushed to the browser via WebSocket. Auto-detects unicast / broadcast / multicast based on the IP you enter. Adaptive max-points budget automatically downsamples under load and ramps back up when headroom returns. Tri-state control: <b>DDS Live / Pause / Stop</b>.</p>
+      </div>
+      <div class="help-page" id="help-page-camera" style="display:none">
+        <h3>Camera Receiver (GVSP/JPEG over UDP)</h3>
+        <p>Switch to the <b>&#128247; Camera</b> tab, set <b>Bind IP</b> and <b>Port</b>, then click <b>Connect</b> to start receiving JPEG frames over UDP.</p>
+        <ul>
+          <li>Frames are pulled via long-poll (<code>/api/camera_frame</code>) using an incrementing frame id, so only new frames are transferred.</li>
+          <li><b>Show FPS badge</b> toggles an on-screen overlay with the live receive rate.</li>
+          <li>Status text shows the current receiver state, resolution, and latest frame metadata.</li>
+          <li>Camera mode is mutually exclusive with DDS Live to avoid receiver/resource conflicts &#8212; switching to Camera stops any active DDS session.</li>
+        </ul>
+      </div>
+      <div class="help-page" id="help-page-gs" style="display:none">
+        <h3>Gaussian Splatting (3DGS / PLY)</h3>
+        <p>Switch to the <b>&#127875; 3DGS</b> tab. Use <b>File &#8594; Open PLY (3DGS)&#8230;</b> or pick a file from the <b>GS File</b> dropdown to load a <code>.ply</code> scene.</p>
+        <ul>
+          <li><b>SH Level</b>: switch spherical-harmonics degree (0&#8211;3) to balance quality vs. performance.</li>
+          <li><b>Model Rotation</b>: adjust Roll / Pitch / Yaw in degrees; changes apply immediately. Double-click inside the viewport to set the rotation pivot for more natural interactive alignment.</li>
+          <li><b>Color Adjust</b>: tune Brightness / Contrast / Saturation / Temperature / Hue in real time, with a one-click Reset.</li>
+          <li>The status area under the panel shows loading state, load time, splat count, and live FPS.</li>
+        </ul>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:flex-end">
+      <button class="btn ghost" onclick="closeHelpModal()">Close</button>
+    </div>
+  </div>
+</div>
+<div id="welcome-modal-overlay" onclick="if(event.target===this)closeWelcomeModal()">
+  <div id="welcome-modal">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <h2>&#9729; Welcome to 51sim Sensor Data Viewer</h2>
+      <button class="btn ghost" onclick="closeWelcomeModal()" style="padding:2px 8px;font-size:.8rem">&#10005;</button>
+    </div>
+    <div id="welcome-shortcuts">
+      <div style="font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin:2px 0">Keyboard</div>
+      <div class="wm-row"><span class="wm-key">Space</span><span>Play / Pause (playback or live streaming)</span></div>
+      <div class="wm-row"><span class="wm-key">&#8592; / &#8594;</span><span>Previous / Next frame (playback)</span></div>
+      <div class="wm-row"><span class="wm-key">P</span><span>Switch to 3D view</span></div>
+      <div class="wm-row"><span class="wm-key">T</span><span>Switch to Top view</span></div>
+      <div class="wm-row"><span class="wm-key">F</span><span>Toggle Free-fly camera</span></div>
+      <div class="wm-row"><span class="wm-key">B</span><span>Toggle sidebar</span></div>
+      <div class="wm-row"><span class="wm-key">L</span><span>Toggle log panel</span></div>
+      <div class="wm-row"><span class="wm-key">Esc</span><span>Exit current mode (pick / draw / lasso / eraser / free-fly)</span></div>
+      <div style="font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin:8px 0 2px">Mouse (orbit view)</div>
+      <div class="wm-row"><span class="wm-key">L-Drag</span><span>Orbit / rotate view</span></div>
+      <div class="wm-row"><span class="wm-key">R-Drag</span><span>Pan view</span></div>
+      <div class="wm-row"><span class="wm-key">Wheel</span><span>Zoom in / out</span></div>
+      <div style="font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin:8px 0 2px">Free-fly camera (F) &#8212; UE-style</div>
+      <div class="wm-row"><span class="wm-key">Hold RMB</span><span>Look around (mouse look)</span></div>
+      <div class="wm-row"><span class="wm-key">W A S D</span><span>Move forward / left / back / right</span></div>
+      <div class="wm-row"><span class="wm-key">Q / E</span><span>Move down / up</span></div>
+      <div class="wm-row"><span class="wm-key">Wheel</span><span>Adjust move speed</span></div>
+      <div class="wm-row"><span class="wm-key">Shift</span><span>Boost speed (hold)</span></div>
+      <div class="wm-row"><span class="wm-key">Esc / F</span><span>Exit free-fly mode</span></div>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:.72rem;color:#94a3b8;cursor:pointer;margin-top:6px">
+      <input type="checkbox" id="welcome-dont-show" onchange="saveWelcomePref()"> Don't show this on startup
+    </label>
+    <div style="display:flex;justify-content:flex-end">
+      <button class="btn" onclick="closeWelcomeModal()">Got it</button>
+    </div>
+  </div>
+</div>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"}}
+</script>
+<script type="module" src="/static/three_view.js"></script>
+<script defer src="/static/ui.js"></script>
+<div id="ctxmenu" style="position:fixed;display:none;z-index:99999;background:#1e293b;border:1px solid #334155;border-radius:4px;padding:4px 0;font-size:.72rem;color:#e2e8f0;box-shadow:0 4px 12px rgba(0,0,0,.4);min-width:90px;user-select:none">
+  <div id="ctx-copy" style="padding:5px 14px;cursor:pointer">复制</div>
+</div>
+<script>
+(function(){
+  const menu=document.getElementById('ctxmenu'),copy=document.getElementById('ctx-copy');
+  function hide(){menu.style.display='none';}
+  document.addEventListener('contextmenu',e=>{
+    const t=e.target;
+    const inEditable=t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable);
+    const inLog=t&&t.closest&&t.closest('#log-panel');
+    if(!inEditable&&!inLog)return; // 默认行为（无菜单）
+    e.preventDefault();
+    const sel=String(window.getSelection()||'');
+    copy.style.opacity=sel?'1':'.4';copy.style.pointerEvents=sel?'auto':'none';
+    menu.style.left=Math.min(e.clientX,innerWidth-110)+'px';
+    menu.style.top=Math.min(e.clientY,innerHeight-40)+'px';
+    menu.style.display='block';
+  });
+  copy.addEventListener('mouseenter',()=>{if(copy.style.pointerEvents!=='none')copy.style.background='#334155';});
+  copy.addEventListener('mouseleave',()=>{copy.style.background='';});
+  copy.addEventListener('click',()=>{
+    const sel=String(window.getSelection()||'');
+    if(sel){
+      if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(sel).catch(()=>{});
+      else{try{document.execCommand('copy');}catch(_){}}
+    }
+    hide();
+  });
+  document.addEventListener('mousedown',e=>{if(!menu.contains(e.target))hide();});
+  window.addEventListener('blur',hide);window.addEventListener('scroll',hide,true);
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')hide();});
+})();
+</script>
+</body>
+</html>

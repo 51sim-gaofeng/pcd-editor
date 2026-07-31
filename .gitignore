@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.pcd_cache/
+_dropped/
+*.pcd
+!sample/*.pcd
+sample/*.ply
+!sample/garbage_truck1.ply
+trajectories/
+*.bin
+*.mtime
+.vscode/
+build/
+dist/
