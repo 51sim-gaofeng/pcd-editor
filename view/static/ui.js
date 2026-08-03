@@ -1249,6 +1249,7 @@ async function _fusionFetchOnce(signal){
   const lidarFrame=r.headers.get('x-lidar-frame')||'-1';
   const projected=r.headers.get('x-projected-points')||'0';
   const offsetMs=r.headers.get('x-frame-offset-ms')||'0';
+  const matchMode=r.headers.get('x-match-mode')||'sim_time';
   const buffer=await r.arrayBuffer();
   if(!buffer.byteLength)return false;
   _fusionLastSequence=seq;
@@ -1258,7 +1259,8 @@ async function _fusionFetchOnce(signal){
   img.onload=()=>{if(previous)URL.revokeObjectURL(previous);img.style.display='block';document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','none');};
   img.src=next;
   const badge=document.getElementById('fusion-badge');
-  badge.style.display='block';badge.textContent='Camera '+cameraFrame+' · LiDAR '+lidarFrame+' · '+projected+' projected pts · offset '+offsetMs+'ms';
+  const modeLabel=matchMode==='wall_clock'?' · match: wall-clock (camera timestamp unavailable)':'';
+  badge.style.display='block';badge.textContent='Camera '+cameraFrame+' · LiDAR '+lidarFrame+' · '+projected+' projected pts · offset '+offsetMs+'ms'+modeLabel;
   document.getElementById('fusion-run-status').textContent=(_fusionPaused?'paused':'running')+' · sequence '+seq;
   return true;
 }

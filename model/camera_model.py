@@ -152,6 +152,7 @@ def _process_gvsp_packet(data: bytes) -> None:
             _cam_fusion_frames.append({
                 'source_frame_id': _cam_source_frame_id,
                 'block_id': _cam_block_id,
+                'recv_wall_ms': int(now_wall * 1000),
                 'jpeg': jpeg_ready,
             })
             _cam_cond.notify_all()

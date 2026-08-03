@@ -376,6 +376,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header('X-Lidar-Frame', str(meta.get('lidar_frame', -1)))
                     self.send_header('X-Projected-Points', str(meta.get('projected_points', 0)))
                     self.send_header('X-Frame-Offset-Ms', str(meta.get('frame_offset_ms', 0)))
+                    self.send_header('X-Match-Mode', str(meta.get('match_mode', 'sim_time')))
                     self.send_header('Cache-Control', 'no-store')
                     self.send_header('Content-Length', str(len(jpeg)))
                     self.end_headers()

@@ -221,17 +221,30 @@ def _worker_loop():
             # against it would be meaningless, so fall back to the raw GVSP block_id
             # (small, monotonic, ms-scale) for both the match key and the reported id.
             camera_source_fid = int(camera['source_frame_id'])
+            timestamp_broken = camera_source_fid > _SOURCE_FRAME_ID_TOO_LARGE
             camera_key = (camera.get('block_id', camera_source_fid)
-                          if camera_source_fid > _SOURCE_FRAME_ID_TOO_LARGE
-                          else camera_source_fid)
-            # Compensate for the camera-vs-lidar systematic lag (see
-            # _frame_offset_ms above): the camera is offset ms ahead of the
-            # lidar frame it should actually be paired with, so subtract the
-            # offset before searching for the closest lidar timestamp.
+                          if timestamp_broken else camera_source_fid)
             offset = get_frame_offset()
-            match_key = camera_key - offset
-            lidar = min(lidars, key=lambda x: _circular_ms_diff(
-                match_key, int(x['source_frame_id'])))
+            if timestamp_broken:
+                # block_id is just a raw GVSP packet-block counter — it has no fixed
+                # relationship to LiDAR's simulation-time source_frame_id (different
+                # scale, different zero-reference), so an ms offset against it is
+                # meaningless (this is why offset tuning had no effect for senders
+                # hitting this path, e.g. simone3.9). Fall back to matching by each
+                # frame's local wall-clock arrival time instead — comparable across
+                # sensors as long as network/processing latency is roughly similar,
+                # regardless of what the camera's broken sim timestamp says.
+                camera_wall_ms = camera.get('recv_wall_ms', 0)
+                match_target = camera_wall_ms - offset
+                lidar = min(lidars, key=lambda x: abs(match_target - x.get('recv_wall_ms', 0)))
+            else:
+                # Compensate for the camera-vs-lidar systematic lag (see
+                # _frame_offset_ms above): the camera is offset ms ahead of the
+                # lidar frame it should actually be paired with, so subtract the
+                # offset before searching for the closest lidar timestamp.
+                match_key = camera_key - offset
+                lidar = min(lidars, key=lambda x: _circular_ms_diff(
+                    match_key, int(x['source_frame_id'])))
             lidar_raw_fid = int(lidar['source_frame_id'])
             # pair/_last_pair dedup uses the raw wrapped value (equality is
             # unaffected by wrapping); only the displayed lidar_frame is unwrapped.
@@ -244,7 +257,8 @@ def _worker_loop():
             with _cond:
                 _last_pair = pair; _sequence += 1; _jpeg = jpeg
                 _meta = {'camera_frame': pair[0], 'lidar_frame': lidar_display_fid,
-                         'projected_points': projected, 'frame_offset_ms': offset}
+                         'projected_points': projected, 'frame_offset_ms': offset,
+                         'match_mode': 'wall_clock' if timestamp_broken else 'sim_time'}
                 _cond.notify_all()
         except Exception as exc:
             with _lock:
