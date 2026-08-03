@@ -358,7 +358,6 @@ def _store_frame(points: np.ndarray, frame_id: int, sim_frame_ms: int | None = N
         _sm_out_bytes_total += len(binary)
         _sm_fusion_frames.append({
             'source_frame_id': sim_ms,  # 16-bit, wraps every 65.536s (see _decode_sim_frame_ms)
-            'recv_wall_ms': t_store_ms,
             'points': points,
         })
         _sm_cond.notify_all()

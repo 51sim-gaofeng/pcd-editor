@@ -328,36 +328,6 @@ class Handler(BaseHTTPRequestHandler):
             from model.fusion_model import get_status as fusion_status
             self._json(fusion_status())
 
-        elif path == '/api/fusion_offset':
-            from model.fusion_model import get_frame_offset, set_frame_offset
-            if 'frames' in params:
-                from model.camera_model import get_avg_frame_period_ms
-                try:
-                    frames = float(params['frames'][0])
-                except (ValueError, IndexError):
-                    frames = 0.0
-                if frames == 0:
-                    self._json({**set_frame_offset(0), 'frames': 0.0, 'period_ms': 0.0})
-                else:
-                    period_ms = get_avg_frame_period_ms()
-                    if period_ms <= 0:
-                        self._json({'ok': False,
-                                    'error': 'no camera frame-rate measurement yet; '
-                                             'start the camera/fusion stream first'})
-                    else:
-                        ms_value = int(round(frames * period_ms))
-                        result = set_frame_offset(ms_value)
-                        result.update({'frames': frames, 'period_ms': period_ms})
-                        self._json(result)
-            elif 'value' in params:
-                try:
-                    value = int(params['value'][0])
-                except (ValueError, IndexError):
-                    value = 0
-                self._json(set_frame_offset(value))
-            else:
-                self._json({'frame_offset_ms': get_frame_offset()})
-
         elif path == '/api/fusion_frame':
             try:
                 after = int(params.get('after', ['-1'])[0])
@@ -375,8 +345,6 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header('X-Camera-Frame', str(meta.get('camera_frame', -1)))
                     self.send_header('X-Lidar-Frame', str(meta.get('lidar_frame', -1)))
                     self.send_header('X-Projected-Points', str(meta.get('projected_points', 0)))
-                    self.send_header('X-Frame-Offset-Ms', str(meta.get('frame_offset_ms', 0)))
-                    self.send_header('X-Match-Mode', str(meta.get('match_mode', 'sim_time')))
                     self.send_header('Cache-Control', 'no-store')
                     self.send_header('Content-Length', str(len(jpeg)))
                     self.end_headers()

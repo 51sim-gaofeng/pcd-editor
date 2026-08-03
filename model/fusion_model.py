@@ -20,48 +20,6 @@ _meta = {}
 _last_pair = None
 _worker = None
 
-# LiDAR needs a full revolution to collect one frame, so its reported
-# source_frame_id is systematically behind the camera's by a fixed number of
-# frames worth of ms. That lag varies by simone version/config, so we don't
-# hardcode a guess — default to 0 and let the offset be tuned live from the UI
-# (see set_frame_offset/get_frame_offset) once a mismatch is observed.
-_frame_offset_ms = 0
-
-# LiDAR's source_frame_id is a uint16 ms clock (see _circular_ms_diff below) that
-# wraps every 65.536s, while the camera's counter grows unbounded — so displayed
-# side by side they look inconsistent once the LiDAR value has wrapped. This
-# state lets us "unwrap" the LiDAR value for *display only* (matching still uses
-# the raw wrapped value via _circular_ms_diff, which is unaffected).
-_lidar_unwrap_last: int | None = None
-_lidar_unwrap_epoch = 0
-
-
-def _unwrap_lidar_ms(raw: int, wrap: int = 65536) -> int:
-    """Turn LiDAR's wrapping uint16 ms counter into an ever-increasing one for
-    display, by detecting large backward jumps (= a wraparound) and adding a
-    running epoch offset. Purely cosmetic — doesn't affect frame matching."""
-    global _lidar_unwrap_last, _lidar_unwrap_epoch
-    if _lidar_unwrap_last is not None:
-        delta = raw - _lidar_unwrap_last
-        if delta < -wrap // 2:
-            _lidar_unwrap_epoch += wrap
-        elif delta > wrap // 2:
-            _lidar_unwrap_epoch -= wrap
-    _lidar_unwrap_last = raw
-    return raw + _lidar_unwrap_epoch
-
-
-def get_frame_offset() -> int:
-    with _lock:
-        return _frame_offset_ms
-
-
-def set_frame_offset(value: int) -> dict:
-    global _frame_offset_ms
-    with _lock:
-        _frame_offset_ms = int(value)
-        return {'ok': True, 'frame_offset_ms': _frame_offset_ms}
-
 
 def _rotation_zyx(roll: float, pitch: float, yaw: float) -> np.ndarray:
     roll, pitch, yaw = np.deg2rad([roll, pitch, yaw])
@@ -101,7 +59,7 @@ def _pose(sensor: dict):
 
 
 def configure(camera: dict, lidar: dict) -> dict:
-    global _config, _last_pair, _lidar_unwrap_last, _lidar_unwrap_epoch
+    global _config, _last_pair
     params = camera.get('params') or camera
     intr = camera.get('intrinsics') or params.get('intrinsics') or params.get('distortion') or {}
     derived = intr.get('derived_opencv_values') or intr
@@ -142,8 +100,6 @@ def configure(camera: dict, lidar: dict) -> dict:
                    'distortion': np.asarray(distortion, np.float64),
                    'transform': transform, 'width': width, 'height': height}
         _last_pair = None
-        _lidar_unwrap_last = None
-        _lidar_unwrap_epoch = 0
     _ensure_worker()
     return {'ok': True, 'camera_matrix': matrix,
             'T_camera_optical_from_lidar': transform.tolist()}
@@ -221,44 +177,19 @@ def _worker_loop():
             # against it would be meaningless, so fall back to the raw GVSP block_id
             # (small, monotonic, ms-scale) for both the match key and the reported id.
             camera_source_fid = int(camera['source_frame_id'])
-            timestamp_broken = camera_source_fid > _SOURCE_FRAME_ID_TOO_LARGE
             camera_key = (camera.get('block_id', camera_source_fid)
-                          if timestamp_broken else camera_source_fid)
-            offset = get_frame_offset()
-            if timestamp_broken:
-                # block_id is just a raw GVSP packet-block counter — it has no fixed
-                # relationship to LiDAR's simulation-time source_frame_id (different
-                # scale, different zero-reference), so an ms offset against it is
-                # meaningless (this is why offset tuning had no effect for senders
-                # hitting this path, e.g. simone3.9). Fall back to matching by each
-                # frame's local wall-clock arrival time instead — comparable across
-                # sensors as long as network/processing latency is roughly similar,
-                # regardless of what the camera's broken sim timestamp says.
-                camera_wall_ms = camera.get('recv_wall_ms', 0)
-                match_target = camera_wall_ms - offset
-                lidar = min(lidars, key=lambda x: abs(match_target - x.get('recv_wall_ms', 0)))
-            else:
-                # Compensate for the camera-vs-lidar systematic lag (see
-                # _frame_offset_ms above): the camera is offset ms ahead of the
-                # lidar frame it should actually be paired with, so subtract the
-                # offset before searching for the closest lidar timestamp.
-                match_key = camera_key - offset
-                lidar = min(lidars, key=lambda x: _circular_ms_diff(
-                    match_key, int(x['source_frame_id'])))
-            lidar_raw_fid = int(lidar['source_frame_id'])
-            # pair/_last_pair dedup uses the raw wrapped value (equality is
-            # unaffected by wrapping); only the displayed lidar_frame is unwrapped.
-            pair = (camera_key, lidar_raw_fid)
+                          if camera_source_fid > _SOURCE_FRAME_ID_TOO_LARGE
+                          else camera_source_fid)
+            lidar = min(lidars, key=lambda x: _circular_ms_diff(
+                camera_key, int(x['source_frame_id'])))
+            pair = (camera_key, lidar['source_frame_id'])
             if pair == _last_pair:
                 time.sleep(.01); continue
             jpeg, projected = _render(camera, lidar, cfg)
-            with _lock:
-                lidar_display_fid = _unwrap_lidar_ms(lidar_raw_fid)
             with _cond:
                 _last_pair = pair; _sequence += 1; _jpeg = jpeg
-                _meta = {'camera_frame': pair[0], 'lidar_frame': lidar_display_fid,
-                         'projected_points': projected, 'frame_offset_ms': offset,
-                         'match_mode': 'wall_clock' if timestamp_broken else 'sim_time'}
+                _meta = {'camera_frame': pair[0], 'lidar_frame': pair[1],
+                         'projected_points': projected}
                 _cond.notify_all()
         except Exception as exc:
             with _lock:
@@ -284,5 +215,4 @@ def get_frame(after: int, timeout: float = 2.0):
 
 def get_status():
     with _lock:
-        return {'configured': _config is not None, 'sequence': _sequence,
-                'frame_offset_ms': _frame_offset_ms, **_meta}
+        return {'configured': _config is not None, 'sequence': _sequence, **_meta}

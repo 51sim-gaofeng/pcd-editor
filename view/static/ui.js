@@ -942,7 +942,7 @@ refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();_init
 const _CAM_PCD_SECTIONS=['sec-file','sec-play','sec-streaming','sec-dds'];
 let _camMode=false,_camActive=false,_camLastId=-1,_camSourceFrameId=-1,_camDisplayFrameId=-1;
 let _fusionMode=false,_fusionVehicleJson=null,_fusionSensors=[];
-let _fusionActive=false,_fusionLastSequence=-1,_fusionAbort=null,_fusionBlobUrl=null,_fusionPaused=false;
+let _fusionActive=false,_fusionLastSequence=-1,_fusionAbort=null,_fusionBlobUrl=null;
 let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0,_camLastBuf=null;
 let _camShowFps=true;
 function _camGetCanvasCtx(){
@@ -1202,94 +1202,49 @@ async function fusionStart(){
     });
     const started=await fetch('/api/fusion_ensure?'+q).then(r=>r.json());
     if(!started.ok)throw new Error(started.error||'receiver start failed');
-    try{await fusionApplyOffset();}catch(e){/* non-fatal: e.g. no frame-rate measurement yet */}
-    _fusionActive=true;_fusionLastSequence=-1;_fusionPaused=false;
-    const pauseBtn=document.getElementById('fusion-pause-btn');if(pauseBtn)pauseBtn.textContent='⏸ Pause';
+    _fusionActive=true;_fusionLastSequence=-1;
     status.textContent='waiting for camera/LiDAR frames…';
     document.getElementById('fusion-start-btn').textContent='⏹ Stop Fusion';
     void _fusionPoll();
   }catch(e){status.textContent='error: '+e.message;setStatus('Fusion start failed','err');}
 }
-async function fusionApplyOffset(){
-  const input=document.getElementById('fusion-frame-offset');if(!input)return;
-  const unit=document.getElementById('fusion-frame-offset-unit')?.value||'frames';
-  const value=parseFloat(input.value)||0;
-  const q=unit==='frames'?('frames='+value):('value='+Math.round(value));
-  try{
-    const r=await fetch('/api/fusion_offset?'+q).then(r=>r.json());
-    if(r.ok===false)throw new Error(r.error||'failed');
-    const detail=unit==='frames'&&r.period_ms
-      ?(' ('+value+' frames \u00d7 '+r.period_ms.toFixed(1)+' ms/frame, measured live)')
-      :'';
-    setStatus('Fusion frame offset set to '+r.frame_offset_ms+' ms'+detail,'ok');
-  }catch(e){setStatus('Frame offset update failed: '+e.message,'err');}
-}
 function fusionStop(){
-  _fusionActive=false;_fusionPaused=false;
+  _fusionActive=false;
   if(_fusionAbort){_fusionAbort.abort();_fusionAbort=null;}
   if(_fusionBlobUrl){URL.revokeObjectURL(_fusionBlobUrl);_fusionBlobUrl=null;}
   const img=document.getElementById('fusion-img');if(img){img.src='';img.style.display='none';}
   document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','flex');
   document.getElementById('fusion-start-btn').textContent='🔗 Apply & Start Fusion';
   document.getElementById('fusion-run-status').textContent='off';
-  // Clear the stale camera/lidar frame badge so it can't be mistaken for a live
-  // frame pair while fusion is stopped (it used to linger from the last run).
-  const badge=document.getElementById('fusion-badge');if(badge){badge.style.display='none';badge.textContent='';}
-  const pauseBtn=document.getElementById('fusion-pause-btn');if(pauseBtn)pauseBtn.textContent='⏸ Pause';
-}
-// Fetch+render exactly one fusion frame. Shared by the live poll loop and by
-// the manual "Step" button (so a paused view can still be advanced one frame
-// at a time — frames change too fast to eyeball otherwise).
-async function _fusionFetchOnce(signal){
-  const r=await fetch('/api/fusion_frame?after='+_fusionLastSequence,{signal,cache:'no-store'});
-  const ct=r.headers.get('content-type')||'';
-  if(ct.includes('json'))return false;
-  const seq=parseInt(r.headers.get('x-fusion-sequence')||'-1',10);
-  const cameraFrame=r.headers.get('x-camera-frame')||'-1';
-  const lidarFrame=r.headers.get('x-lidar-frame')||'-1';
-  const projected=r.headers.get('x-projected-points')||'0';
-  const offsetMs=r.headers.get('x-frame-offset-ms')||'0';
-  const matchMode=r.headers.get('x-match-mode')||'sim_time';
-  const buffer=await r.arrayBuffer();
-  if(!buffer.byteLength)return false;
-  _fusionLastSequence=seq;
-  const next=URL.createObjectURL(new Blob([buffer],{type:'image/jpeg'}));
-  const previous=_fusionBlobUrl;_fusionBlobUrl=next;
-  const img=document.getElementById('fusion-img');
-  img.onload=()=>{if(previous)URL.revokeObjectURL(previous);img.style.display='block';document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','none');};
-  img.src=next;
-  const badge=document.getElementById('fusion-badge');
-  const modeLabel=matchMode==='wall_clock'?' · match: wall-clock (camera timestamp unavailable)':'';
-  badge.style.display='block';badge.textContent='Camera '+cameraFrame+' · LiDAR '+lidarFrame+' · '+projected+' projected pts · offset '+offsetMs+'ms'+modeLabel;
-  document.getElementById('fusion-run-status').textContent=(_fusionPaused?'paused':'running')+' · sequence '+seq;
-  return true;
 }
 async function _fusionPoll(){
   while(_fusionActive&&_fusionMode){
-    if(_fusionPaused){await new Promise(resolve=>setTimeout(resolve,150));continue;}
     _fusionAbort=new AbortController();
     try{
-      await _fusionFetchOnce(_fusionAbort.signal);
+      const r=await fetch('/api/fusion_frame?after='+_fusionLastSequence,{signal:_fusionAbort.signal,cache:'no-store'});
+      const ct=r.headers.get('content-type')||'';
+      if(ct.includes('json')){await new Promise(resolve=>setTimeout(resolve,100));continue;}
+      const seq=parseInt(r.headers.get('x-fusion-sequence')||'-1',10);
+      const cameraFrame=r.headers.get('x-camera-frame')||'-1';
+      const lidarFrame=r.headers.get('x-lidar-frame')||'-1';
+      const projected=r.headers.get('x-projected-points')||'0';
+      const buffer=await r.arrayBuffer();
+      if(!buffer.byteLength)continue;
+      _fusionLastSequence=seq;
+      const next=URL.createObjectURL(new Blob([buffer],{type:'image/jpeg'}));
+      const previous=_fusionBlobUrl;_fusionBlobUrl=next;
+      const img=document.getElementById('fusion-img');
+      img.onload=()=>{if(previous)URL.revokeObjectURL(previous);img.style.display='block';document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','none');};
+      img.src=next;
+      const badge=document.getElementById('fusion-badge');
+      badge.style.display='block';badge.textContent='Camera '+cameraFrame+' · LiDAR '+lidarFrame+' · '+projected+' projected pts';
+      document.getElementById('fusion-run-status').textContent='running · sequence '+seq;
     }catch(e){
       if(e.name==='AbortError'||!_fusionActive||!_fusionMode)break;
       await new Promise(resolve=>setTimeout(resolve,250));
     }
   }
   _fusionAbort=null;
-}
-function fusionTogglePause(){
-  if(!_fusionActive)return;
-  _fusionPaused=!_fusionPaused;
-  const btn=document.getElementById('fusion-pause-btn');
-  if(btn)btn.textContent=_fusionPaused?'▶ Resume':'⏸ Pause';
-  document.getElementById('fusion-run-status').textContent=(_fusionPaused?'paused':'running')+' · sequence '+_fusionLastSequence;
-}
-async function fusionStepFrame(){
-  // Grab exactly one new fused frame and hold on it — lets you inspect a
-  // single camera/LiDAR pairing closely instead of it flashing by at ~10-30fps.
-  if(!_fusionActive)return;
-  if(!_fusionPaused)fusionTogglePause();
-  try{await _fusionFetchOnce();}catch(e){setStatus('Fusion step failed: '+e.message,'err');}
 }
 // ── Viewport toolbar (View / Trajectory / Edit Cloud floating panel) ───────
 const _VP_TITLES={view:'View',traj:'Trajectory',edit:'Edit Cloud'};
