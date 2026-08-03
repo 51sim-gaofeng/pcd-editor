@@ -205,6 +205,16 @@
         </div>
         <button class="btn full-w" id="fusion-start-btn" onclick="fusionStart()">&#128279; Apply &amp; Start Fusion</button>
         <div id="fusion-run-status" class="fusion-hint">off</div>
+        <div style="display:flex;gap:6px;margin-top:4px">
+          <button class="btn ghost" style="flex:1" id="fusion-pause-btn" onclick="fusionTogglePause()"
+                  title="Freeze the fusion view on the current frame so you can inspect the camera/LiDAR alignment closely — frames normally change too fast to eyeball.">
+            &#9208; Pause
+          </button>
+          <button class="btn ghost" style="flex:1" onclick="fusionStepFrame()"
+                  title="Pause (if not already) and advance exactly one fused frame, for careful frame-by-frame inspection.">
+            &#9197; Step
+          </button>
+        </div>
         <label class="fusion-hint" style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap">
           Frame offset
           <input id="fusion-frame-offset" type="number" value="0" step="1" style="width:60px"
