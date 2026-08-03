@@ -17,8 +17,15 @@ _config = None
 _sequence = -1
 _jpeg = b''
 _meta = {}
-_last_pair = None
+_last_lidar_fid = None
 _worker = None
+
+# If the closest available camera frame is still farther than this from the
+# anchor LiDAR frame's timestamp, we skip rendering rather than force a pairing
+# between sensors that clearly aren't from the same moment (e.g. after a camera
+# stream stall/gap). LiDAR completes a frame roughly every ~100ms; this gives
+# a full LiDAR period of slack before giving up on finding a usable match.
+_MAX_MATCH_DIFF_MS = 100
 
 
 def _rotation_zyx(roll: float, pitch: float, yaw: float) -> np.ndarray:
@@ -59,7 +66,7 @@ def _pose(sensor: dict):
 
 
 def configure(camera: dict, lidar: dict) -> dict:
-    global _config, _last_pair
+    global _config, _last_lidar_fid
     params = camera.get('params') or camera
     intr = camera.get('intrinsics') or params.get('intrinsics') or params.get('distortion') or {}
     derived = intr.get('derived_opencv_values') or intr
@@ -99,7 +106,7 @@ def configure(camera: dict, lidar: dict) -> dict:
         _config = {'camera_matrix': np.asarray(matrix, np.float64),
                    'distortion': np.asarray(distortion, np.float64),
                    'transform': transform, 'width': width, 'height': height}
-        _last_pair = None
+        _last_lidar_fid = None
     _ensure_worker()
     return {'ok': True, 'camera_matrix': matrix,
             'T_camera_optical_from_lidar': transform.tolist()}
@@ -157,7 +164,7 @@ def _circular_ms_diff(a: int, b: int, wrap: int = 65536) -> int:
 
 
 def _worker_loop():
-    global _sequence, _jpeg, _meta, _last_pair
+    global _sequence, _jpeg, _meta, _last_lidar_fid
     while True:
         try:
             cameras, lidars = get_fusion_frames(), get_lidar_frames()
@@ -165,7 +172,18 @@ def _worker_loop():
                 cfg = copy.deepcopy(_config)
             if not cfg or not cameras or not lidars:
                 time.sleep(.03); continue
-            camera = cameras[-1]
+            # Anchor on the newest completed LiDAR frame rather than the newest
+            # camera frame: LiDAR is the slower/sparser sensor (~100ms per full
+            # spin vs the camera's ~33ms period), so for any given LiDAR frame
+            # there are ~3x more camera candidates nearby in time — searching the
+            # denser stream for the closest match gives a much tighter residual
+            # than the reverse (which is what makes LiDAR the natural "trigger"
+            # for each new fused frame; the camera's own extra frames in between
+            # two LiDAR frames wouldn't add new LiDAR content anyway).
+            lidar = lidars[-1]
+            lidar_fid = int(lidar['source_frame_id'])
+            if lidar_fid == _last_lidar_fid:
+                time.sleep(.01); continue
             # Both source_frame_id values are simulation-relative ms clocks (not
             # wall-clock epoch time — confirmed against the actual senders:
             # udp_utils.py/simone_publisher.py both derive them from frame_id/fps),
@@ -176,20 +194,24 @@ def _worker_loop():
             # _display_frame_id/_SOURCE_FRAME_ID_TOO_LARGE). In that case matching
             # against it would be meaningless, so fall back to the raw GVSP block_id
             # (small, monotonic, ms-scale) for both the match key and the reported id.
-            camera_source_fid = int(camera['source_frame_id'])
-            camera_key = (camera.get('block_id', camera_source_fid)
-                          if camera_source_fid > _SOURCE_FRAME_ID_TOO_LARGE
-                          else camera_source_fid)
-            lidar = min(lidars, key=lambda x: _circular_ms_diff(
-                camera_key, int(x['source_frame_id'])))
-            pair = (camera_key, lidar['source_frame_id'])
-            if pair == _last_pair:
+            def _camera_key(c):
+                fid = int(c['source_frame_id'])
+                return c.get('block_id', fid) if fid > _SOURCE_FRAME_ID_TOO_LARGE else fid
+            camera = min(cameras, key=lambda c: _circular_ms_diff(lidar_fid, _camera_key(c)))
+            residual_ms = _circular_ms_diff(lidar_fid, _camera_key(camera))
+            if residual_ms > _MAX_MATCH_DIFF_MS:
+                # Even the closest available camera frame is too far from this
+                # LiDAR frame's timestamp to trust as a real pairing (e.g. the
+                # camera stream stalled/dropped frames) — skip rendering rather
+                # than fusing two sensors that clearly aren't from the same
+                # moment, which would otherwise look like a bad/wrong calibration.
+                _last_lidar_fid = lidar_fid
                 time.sleep(.01); continue
             jpeg, projected = _render(camera, lidar, cfg)
             with _cond:
-                _last_pair = pair; _sequence += 1; _jpeg = jpeg
-                _meta = {'camera_frame': pair[0], 'lidar_frame': pair[1],
-                         'projected_points': projected}
+                _last_lidar_fid = lidar_fid; _sequence += 1; _jpeg = jpeg
+                _meta = {'camera_frame': _camera_key(camera), 'lidar_frame': lidar_fid,
+                         'projected_points': projected, 'match_residual_ms': residual_ms}
                 _cond.notify_all()
         except Exception as exc:
             with _lock:
