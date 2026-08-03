@@ -1231,6 +1231,9 @@ function fusionStop(){
   document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','flex');
   document.getElementById('fusion-start-btn').textContent='🔗 Apply & Start Fusion';
   document.getElementById('fusion-run-status').textContent='off';
+  // Clear the stale camera/lidar frame badge so it can't be mistaken for a live
+  // frame pair while fusion is stopped (it used to linger from the last run).
+  const badge=document.getElementById('fusion-badge');if(badge){badge.style.display='none';badge.textContent='';}
 }
 async function _fusionPoll(){
   while(_fusionActive&&_fusionMode){
