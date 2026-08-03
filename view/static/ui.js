@@ -1202,11 +1202,26 @@ async function fusionStart(){
     });
     const started=await fetch('/api/fusion_ensure?'+q).then(r=>r.json());
     if(!started.ok)throw new Error(started.error||'receiver start failed');
+    try{await fusionApplyOffset();}catch(e){/* non-fatal: e.g. no frame-rate measurement yet */}
     _fusionActive=true;_fusionLastSequence=-1;
     status.textContent='waiting for camera/LiDAR frames…';
     document.getElementById('fusion-start-btn').textContent='⏹ Stop Fusion';
     void _fusionPoll();
   }catch(e){status.textContent='error: '+e.message;setStatus('Fusion start failed','err');}
+}
+async function fusionApplyOffset(){
+  const input=document.getElementById('fusion-frame-offset');if(!input)return;
+  const unit=document.getElementById('fusion-frame-offset-unit')?.value||'frames';
+  const value=parseFloat(input.value)||0;
+  const q=unit==='frames'?('frames='+value):('value='+Math.round(value));
+  try{
+    const r=await fetch('/api/fusion_offset?'+q).then(r=>r.json());
+    if(r.ok===false)throw new Error(r.error||'failed');
+    const detail=unit==='frames'&&r.period_ms
+      ?(' ('+value+' frames \u00d7 '+r.period_ms.toFixed(1)+' ms/frame, measured live)')
+      :'';
+    setStatus('Fusion frame offset set to '+r.frame_offset_ms+' ms'+detail,'ok');
+  }catch(e){setStatus('Frame offset update failed: '+e.message,'err');}
 }
 function fusionStop(){
   _fusionActive=false;
@@ -1228,6 +1243,7 @@ async function _fusionPoll(){
       const cameraFrame=r.headers.get('x-camera-frame')||'-1';
       const lidarFrame=r.headers.get('x-lidar-frame')||'-1';
       const projected=r.headers.get('x-projected-points')||'0';
+      const offsetMs=r.headers.get('x-frame-offset-ms')||'0';
       const buffer=await r.arrayBuffer();
       if(!buffer.byteLength)continue;
       _fusionLastSequence=seq;
@@ -1237,7 +1253,7 @@ async function _fusionPoll(){
       img.onload=()=>{if(previous)URL.revokeObjectURL(previous);img.style.display='block';document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','none');};
       img.src=next;
       const badge=document.getElementById('fusion-badge');
-      badge.style.display='block';badge.textContent='Camera '+cameraFrame+' · LiDAR '+lidarFrame+' · '+projected+' projected pts';
+      badge.style.display='block';badge.textContent='Camera '+cameraFrame+' · LiDAR '+lidarFrame+' · '+projected+' projected pts · offset '+offsetMs+'ms';
       document.getElementById('fusion-run-status').textContent='running · sequence '+seq;
     }catch(e){
       if(e.name==='AbortError'||!_fusionActive||!_fusionMode)break;

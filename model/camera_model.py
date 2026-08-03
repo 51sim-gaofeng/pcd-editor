@@ -54,6 +54,10 @@ _REASSEMBLY_TTL = 1.0
 _REASSEMBLY_MAX = 32
 
 _cam_fusion_frames = deque(maxlen=60)
+# Rolling wall-clock inter-arrival times (ms) between consecutive completed
+# frames, used to convert a user-friendly "N frames" fusion offset into ms
+# without assuming a nominal fps (actual camera rate may vary/differ per sensor).
+_cam_frame_intervals_ms = deque(maxlen=30)
 
 
 def _gc_reassembly(now: float) -> None:
@@ -139,7 +143,12 @@ def _process_gvsp_packet(data: bytes) -> None:
             _cam_source_frame_id = int(sim_ns // 1_000_000)  # ms, for display/logging parity
             _cam_block_id = block_id
             _cam_recv_count += 1
-            _cam_last_ts = time.time()
+            now_wall = time.time()
+            if _cam_last_ts > 0:
+                interval_ms = (now_wall - _cam_last_ts) * 1000.0
+                if 0 < interval_ms < 5000:  # ignore startup/stall gaps as outliers
+                    _cam_frame_intervals_ms.append(interval_ms)
+            _cam_last_ts = now_wall
             _cam_fusion_frames.append({
                 'source_frame_id': _cam_source_frame_id,
                 'block_id': _cam_block_id,
@@ -263,9 +272,21 @@ def get_fusion_frames() -> list:
         return list(_cam_fusion_frames)
 
 
+def get_avg_frame_period_ms() -> float:
+    """Measured average time between consecutive camera frames (ms), or 0.0
+    if too few frames have arrived yet to estimate a rate."""
+    with _cam_lock:
+        intervals = list(_cam_frame_intervals_ms)
+    if not intervals:
+        return 0.0
+    return sum(intervals) / len(intervals)
+
+
 def get_status() -> dict:
     with _cam_lock:
         age_ms = round((time.time() - _cam_last_ts) * 1000) if _cam_last_ts > 0 else -1
+        intervals = list(_cam_frame_intervals_ms)
+        avg_period_ms = sum(intervals) / len(intervals) if intervals else 0.0
         return {
             'running': _cam_running,
             'host': _cam_bind_host,
@@ -276,6 +297,7 @@ def get_status() -> dict:
             'block_id': _cam_block_id,
             'display_frame_id': _display_frame_id(_cam_source_frame_id, _cam_block_id),
             'age_ms': age_ms,
+            'avg_frame_period_ms': avg_period_ms,
         }
 
 

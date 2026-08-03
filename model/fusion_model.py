@@ -20,6 +20,25 @@ _meta = {}
 _last_pair = None
 _worker = None
 
+# LiDAR needs a full revolution to collect one frame, so its reported
+# source_frame_id is systematically behind the camera's by a fixed number of
+# frames worth of ms. That lag varies by simone version/config, so we don't
+# hardcode a guess — default to 0 and let the offset be tuned live from the UI
+# (see set_frame_offset/get_frame_offset) once a mismatch is observed.
+_frame_offset_ms = 0
+
+
+def get_frame_offset() -> int:
+    with _lock:
+        return _frame_offset_ms
+
+
+def set_frame_offset(value: int) -> dict:
+    global _frame_offset_ms
+    with _lock:
+        _frame_offset_ms = int(value)
+        return {'ok': True, 'frame_offset_ms': _frame_offset_ms}
+
 
 def _rotation_zyx(roll: float, pitch: float, yaw: float) -> np.ndarray:
     roll, pitch, yaw = np.deg2rad([roll, pitch, yaw])
@@ -180,8 +199,14 @@ def _worker_loop():
             camera_key = (camera.get('block_id', camera_source_fid)
                           if camera_source_fid > _SOURCE_FRAME_ID_TOO_LARGE
                           else camera_source_fid)
+            # Compensate for the camera-vs-lidar systematic lag (see
+            # _frame_offset_ms above): the camera is offset ms ahead of the
+            # lidar frame it should actually be paired with, so subtract the
+            # offset before searching for the closest lidar timestamp.
+            offset = get_frame_offset()
+            match_key = camera_key - offset
             lidar = min(lidars, key=lambda x: _circular_ms_diff(
-                camera_key, int(x['source_frame_id'])))
+                match_key, int(x['source_frame_id'])))
             pair = (camera_key, lidar['source_frame_id'])
             if pair == _last_pair:
                 time.sleep(.01); continue
@@ -189,7 +214,7 @@ def _worker_loop():
             with _cond:
                 _last_pair = pair; _sequence += 1; _jpeg = jpeg
                 _meta = {'camera_frame': pair[0], 'lidar_frame': pair[1],
-                         'projected_points': projected}
+                         'projected_points': projected, 'frame_offset_ms': offset}
                 _cond.notify_all()
         except Exception as exc:
             with _lock:
@@ -215,4 +240,5 @@ def get_frame(after: int, timeout: float = 2.0):
 
 def get_status():
     with _lock:
-        return {'configured': _config is not None, 'sequence': _sequence, **_meta}
+        return {'configured': _config is not None, 'sequence': _sequence,
+                'frame_offset_ms': _frame_offset_ms, **_meta}

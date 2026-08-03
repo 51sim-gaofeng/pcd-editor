@@ -205,6 +205,17 @@
         </div>
         <button class="btn full-w" id="fusion-start-btn" onclick="fusionStart()">&#128279; Apply &amp; Start Fusion</button>
         <div id="fusion-run-status" class="fusion-hint">off</div>
+        <label class="fusion-hint" style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap">
+          Frame offset
+          <input id="fusion-frame-offset" type="number" value="0" step="1" style="width:60px"
+                 title="Camera leads LiDAR by this many frames/ms (LiDAR needs a full spin to finish a frame, so it lags behind). Positive = camera is ahead. If the badge shows a mismatched pair (e.g. camera 366 vs lidar 300), adjust this until they line up. 0 = no correction."
+                 onchange="fusionApplyOffset()">
+          <select id="fusion-frame-offset-unit" style="padding:2px 4px" onchange="fusionApplyOffset()">
+            <option value="frames" selected>frames</option>
+            <option value="ms">ms</option>
+          </select>
+          <button class="btn ghost" style="padding:2px 10px" onclick="fusionApplyOffset()">Apply</button>
+        </label>
       </div>
     </details>
   </div>
