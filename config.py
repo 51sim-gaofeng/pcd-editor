@@ -6,7 +6,7 @@ import argparse
 import subprocess
 
 APP_NAME = '51sim Sensor Data Viewer'
-APP_VERSION = '0.6'
+APP_VERSION = '0.8'
 
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 _app_info_cache = None

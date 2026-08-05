@@ -62,6 +62,7 @@ Open **http://localhost:9089** in your browser, or just launch the binary on Win
 
 ### Camera Receiver (GVSP/JPEG over UDP)
 - Dedicated Camera mode for live image stream rendering (separate from PCD and GS modes).
+- **Pure-Python GVSP decoder** (EI=1 mode, 20-byte header, JPEG payload) — no SimOneStreamingAPI.dll or any native runtime required.
 - Long-poll frame fetch path (`/api/camera_frame`) with frame-id incremental pull.
 - Connect/Stop control for receiver lifecycle (`/api/camera_ensure`) with bind IP/port configuration.
 - Real-time status updates: frame id, resolution, and FPS badge.
@@ -74,6 +75,22 @@ Open **http://localhost:9089** in your browser, or just launch the binary on Win
 - `Show FPS badge`: toggle on-screen FPS display.
 - `cam-status`: shows current receiver state and latest frame metadata.
 - `cam-bind-status`: shows current bind/listen endpoint and running status.
+
+### Fusion (live LiDAR-camera projection)
+- Dedicated Fusion mode overlays live LiDAR points onto the live camera image using each sensor's calibration.
+- **Vehicle JSON import**: reads camera intrinsics/distortion + camera & LiDAR extrinsics from the main-vehicle JSON, then builds the camera-optical-from-LiDAR transform automatically.
+- **Both receivers are pure-Python** (camera GVSP + LiDAR MSOP/DIFOP) — no native DLL dependency.
+- **LiDAR-anchored frame alignment**: each new completed LiDAR frame picks the closest camera frame by a wraparound-aware circular ms distance; pairs beyond a max time difference are skipped rather than mis-fused.
+- **Pause / Step**: freeze the stream and step frame-by-frame for inspection.
+- **Projected-point controls via the shared View panel**: the `Points → Size` slider and `Color` dropdown (Intensity / Height (Z) / Flat) drive the fused overlay live, the same controls used for PCD/3DGS.
+- Vectorized point splatting keeps the server-side render fast (~50x faster than per-point drawing) at 50k+ projected points/frame.
+
+#### Fusion Tab controls
+- `Import Main Vehicle JSON`: load sensor intrinsics/extrinsics.
+- `Camera` / `LiDAR` selectors: pick which camera and LiDAR from the JSON to fuse.
+- `LiDAR IP / port`, `DIFOP port`, `Camera port`: receiver endpoints (default `127.0.0.1`).
+- `Apply & Start / Stop Fusion`: start or stop the fused stream.
+- Overlay badge: `Camera <frame> · LiDAR <frame> · <N> projected pts` + render fps.
 
 ### Gaussian Splatting (3DGS / PLY)
 - Dedicated GS mode for `.ply` assets with drag-and-drop upload and server-side file listing
@@ -232,6 +249,11 @@ All HTTP routing. Static files under `/static/*` are served from `view/static/`.
 | GET    | `/api/camera_status`          | Camera receiver status + telemetry       |
 | GET    | `/api/camera_ensure`          | Ensure/start camera receiver             |
 | GET    | `/api/camera_rebind`          | Rebind camera receiver IP/port           |
+| GET    | `/api/fusion_frame`           | Long-poll latest fused JPEG frame        |
+| GET    | `/api/fusion_status`          | Fusion worker status + match telemetry   |
+| GET    | `/api/fusion_ensure`          | Start camera + LiDAR receivers for fusion |
+| GET    | `/api/fusion_render_options`  | Set projected-point size / color mode    |
+| POST   | `/api/fusion_config`          | Configure calibration from vehicle JSON  |
 | GET    | `/api/gaussian_files`         | List available `.ply` files for GS mode |
 | GET    | `/api/pcd_max_points`         | Read the current static-PCD downsample cap |
 | GET    | `/api/pcd_set_max_points`     | Set the static-PCD downsample cap        |
@@ -341,6 +363,7 @@ Cache is invalidated automatically when the source `.pcd` file is modified.
 |--------------|----------|--------------------------------------|
 | `numpy`      | ✅ Yes   | Array operations, binary parsing     |
 | `websockets` | ✅ Yes   | DDS live WebSocket server            |
+| `opencv-python` | Fusion | JPEG decode + LiDAR-camera projection (Fusion mode) |
 | `pywebview`  | Windows  | Native desktop window (auto-falls back to browser) |
 | `pillow`     | Build    | App icon generation                  |
 | `pandas`     | Optional | 10-20× faster ASCII PCD parsing      |
@@ -418,13 +441,11 @@ Use the same pipeline for every release (starting from `v0.1.4`):
 Notes:
 - `sample/garbage_truck1.ply` is included in sample assets and should be shipped together with other samples.
 - `test_gs_smoke.py` verifies 3DGS endpoints, including PLY upload.
-## SimOne Streaming API runtime
+## Sensor receivers (pure Python, no native runtime)
 
-The Windows Streaming API runtime is stored in
-`runtime/simone/Win64`. Both direct Python execution and the PyInstaller
-build use this repository-relative directory, so users do not need the same
-SimOne installation path or drive letter as the original developer.
-
-`SIMONE_API_DIR` (runtime) and `SIMONE_STREAMING_DLL` (PyInstaller build) are
-optional overrides for testing another SDK version.
+As of v0.8 the Camera (GVSP) and Streaming LiDAR (MSOP/DIFOP) receivers — and
+the Fusion mode that combines them — are decoded entirely in Python. The
+SimOneStreamingAPI.dll and its bundled Windows runtime are **no longer required
+or shipped**, so both direct Python execution and the PyInstaller build run with
+no external SDK, install path, or drive-letter assumptions.
 
