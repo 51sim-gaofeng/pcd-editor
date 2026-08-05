@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import threading
 import time
+from collections import deque
 
 import cv2
 import numpy as np
@@ -26,6 +27,14 @@ _worker = None
 # stream stall/gap). LiDAR completes a frame roughly every ~100ms; this gives
 # a full LiDAR period of slack before giving up on finding a usable match.
 _MAX_MATCH_DIFF_MS = 100
+
+# Rolling perf counters for the render loop itself — lets you tell whether the
+# fusion pipeline is keeping up with incoming sensor data (see get_status()'s
+# render_fps/render_avg_ms/render_max_ms) independent of whatever the raw
+# camera/LiDAR receive rates are (those are reported by camera_model/
+# streaming_model's own get_status()).
+_render_times_ms = deque(maxlen=60)
+_render_fps_window = deque(maxlen=60)  # wall-clock timestamps of completed renders
 
 
 def _rotation_zyx(roll: float, pitch: float, yaw: float) -> np.ndarray:
@@ -107,6 +116,8 @@ def configure(camera: dict, lidar: dict) -> dict:
                    'distortion': np.asarray(distortion, np.float64),
                    'transform': transform, 'width': width, 'height': height}
         _last_lidar_fid = None
+        _render_times_ms.clear()
+        _render_fps_window.clear()
     _ensure_worker()
     return {'ok': True, 'camera_matrix': matrix,
             'T_camera_optical_from_lidar': transform.tolist()}
@@ -163,6 +174,23 @@ def _circular_ms_diff(a: int, b: int, wrap: int = 65536) -> int:
     return min(d, wrap - d)
 
 
+def _render_perf_snapshot() -> dict:
+    """Must be called with _lock held. Returns the rolling render_fps/
+    render_avg_ms/render_max_ms perf summary (empty dict if no data yet)."""
+    times = list(_render_times_ms)
+    fps_window = list(_render_fps_window)
+    perf = {}
+    if times:
+        perf['render_avg_ms'] = round(sum(times) / len(times), 1)
+        perf['render_max_ms'] = round(max(times), 1)
+    if len(fps_window) >= 2:
+        span_s = fps_window[-1] - fps_window[0]
+        if span_s > 0:
+            # (n-1) intervals across n timestamps in the rolling window.
+            perf['render_fps'] = round((len(fps_window) - 1) / span_s, 2)
+    return perf
+
+
 def _worker_loop():
     global _sequence, _jpeg, _meta, _last_lidar_fid
     while True:
@@ -207,11 +235,19 @@ def _worker_loop():
                 # moment, which would otherwise look like a bad/wrong calibration.
                 _last_lidar_fid = lidar_fid
                 time.sleep(.01); continue
+            render_t0 = time.perf_counter()
             jpeg, projected = _render(camera, lidar, cfg)
+            render_ms = (time.perf_counter() - render_t0) * 1000.0
+            now_wall = time.time()
+            with _lock:
+                _render_times_ms.append(render_ms)
+                _render_fps_window.append(now_wall)
+                perf = _render_perf_snapshot()
             with _cond:
                 _last_lidar_fid = lidar_fid; _sequence += 1; _jpeg = jpeg
                 _meta = {'camera_frame': _camera_key(camera), 'lidar_frame': lidar_fid,
-                         'projected_points': projected, 'match_residual_ms': residual_ms}
+                         'projected_points': projected, 'match_residual_ms': residual_ms,
+                         'render_ms': round(render_ms, 1), **perf}
                 _cond.notify_all()
         except Exception as exc:
             with _lock:
@@ -237,4 +273,6 @@ def get_frame(after: int, timeout: float = 2.0):
 
 def get_status():
     with _lock:
-        return {'configured': _config is not None, 'sequence': _sequence, **_meta}
+        perf = _render_perf_snapshot()
+        return {'configured': _config is not None, 'sequence': _sequence,
+                **perf, **_meta}
