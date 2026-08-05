@@ -8,7 +8,13 @@
 - **相机/激光雷达选择器**：从 JSON 里挑选要融合的具体传感器
 - **以激光雷达帧为锚的帧对齐**：每来一个完整的激光雷达帧，就用"环形绕回感知的毫秒距离"从相机流里挑最近的一帧配对（激光雷达约 100ms 一帧、相机约 33ms 一帧，用密集的相机流去匹配稀疏的激光帧残差最小）；配对时间差超过阈值直接跳过，不强行融合明显不同时刻的两个传感器
 - **Pause / Step**：冻结画面并逐帧步进，便于检查对齐
-- **投影点参数复用 View 面板**：`Points → Size` 滑块和 `Color` 下拉（Intensity / Height(Z) / Flat）实时驱动融合叠加效果，跟 PCD/3DGS 用的是同一套控件（`/api/fusion_render_options`）
+- **投影点参数复用 View 面板**：`Points → Size` 滑块和 `Color` 下拉（Intensity / Height(Z) / Flat）实时驱动融合叠加效果，跟 PCD/3DGS 用的是同一套控件（`/api/fusion_render_options`）；进入 Fusion 模式时 Color 默认切到 Intensity（退出时恢复原模式）
+
+#### Fusion 易用性增强（多相机 / 免重导入 / 实时切换）
+- **多相机端口自动填充**：切换 Camera / LiDAR 下拉时，自动从所选传感器的 `subscriptionChannel` / `deviceInfoChannel` 解析出端口和 IP 回填到接收器输入框（多路相机各自端口不同，之前一直卡在第一路的端口）
+- **运行中实时切换传感器**：融合运行时切换相机/雷达会自动重算投影矩阵（`/api/fusion_config`）+ 重绑接收器端口（`/api/fusion_ensure`），无需先停止再重启
+- **主车 JSON 缓存 + 下拉复用**：导入的主车 JSON 会保存到软件缓存目录（`<data_dir>/_vehicles/`），新增下拉列表可直接复用，不用每次重新导入（`/api/upload_vehicle_json`、`/api/vehicle_json_files`、`/api/vehicle_json`）
+- **停止融合保留画面**：Stop Fusion 后保留最后一帧融合结果，不再清屏
 
 #### 全链路去 DLL 化（纯 Python 接收）
 - Camera（GVSP）、Streaming 激光雷达（MSOP/DIFOP）以及 Fusion，全部改为纯 Python 解码，**不再依赖 SimOneStreamingAPI.dll 及其打包运行时**（`runtime/simone/Win64` 已移除，spec 不再打包）
@@ -24,7 +30,8 @@
 
 ### 修复
 
-- 默认传感器/DDS 地址统一改回 `127.0.0.1`（前端输入框 + 后端兜底默认值，共 7 处）
+- **相机外参旋转弧度/角度修正**：SimOne 主车 JSON 的 `roll/pitch/yaw` 是弧度（后向相机 yaw=π=180°），但之前 `_rotation_zyx` 里做了 `deg2rad` 当成角度处理，导致后向相机投影矩阵几乎变成单位阵、点云完全对不齐；现只对 `*_deg`/`rotation` 列表字段做角度转换，普通 `roll/pitch/yaw` 直接当弧度用
+- 默认传感器/DDS 地址统一改回 `127.0.0.1`（前端输入框 + 后端兜底默认值）
 - 融合停止时清除残留的叠加信息角标
 - 激光雷达帧号显示按相机侧同款方式解绕回，保持一致
 

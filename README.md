@@ -81,13 +81,16 @@ Open **http://localhost:9089** in your browser, or just launch the binary on Win
 - **Vehicle JSON import**: reads camera intrinsics/distortion + camera & LiDAR extrinsics from the main-vehicle JSON, then builds the camera-optical-from-LiDAR transform automatically.
 - **Both receivers are pure-Python** (camera GVSP + LiDAR MSOP/DIFOP) — no native DLL dependency.
 - **LiDAR-anchored frame alignment**: each new completed LiDAR frame picks the closest camera frame by a wraparound-aware circular ms distance; pairs beyond a max time difference are skipped rather than mis-fused.
-- **Pause / Step**: freeze the stream and step frame-by-frame for inspection.
-- **Projected-point controls via the shared View panel**: the `Points → Size` slider and `Color` dropdown (Intensity / Height (Z) / Flat) drive the fused overlay live, the same controls used for PCD/3DGS.
+- **Multi-camera aware**: selecting a camera/LiDAR auto-fills its receiver port/IP from the JSON's `subscriptionChannel`/`deviceInfoChannel`, and switching sensors while running live-recomputes the projection matrix + rebinds receivers (no stop/restart needed).
+- **Vehicle JSON cache**: imported main-vehicle JSONs are saved server-side (`<data_dir>/_vehicles/`) and offered in a dropdown for re-selection without re-importing.
+- **Pause / Step**: freeze the stream and step frame-by-frame for inspection; stopping keeps the last fused frame on screen.
+- **Projected-point controls via the shared View panel**: the `Points → Size` slider and `Color` dropdown (Intensity / Height (Z) / Flat) drive the fused overlay live, the same controls used for PCD/3DGS (Color defaults to Intensity in Fusion mode).
 - Vectorized point splatting keeps the server-side render fast (~50x faster than per-point drawing) at 50k+ projected points/frame.
 
 #### Fusion Tab controls
-- `Import Main Vehicle JSON`: load sensor intrinsics/extrinsics.
-- `Camera` / `LiDAR` selectors: pick which camera and LiDAR from the JSON to fuse.
+- `Import Main Vehicle JSON`: load sensor intrinsics/extrinsics (saved to cache for re-use).
+- `Saved vehicle JSON` dropdown: re-load a previously imported JSON without re-importing.
+- `Camera` / `LiDAR` selectors: pick which camera and LiDAR from the JSON to fuse (ports auto-fill).
 - `LiDAR IP / port`, `DIFOP port`, `Camera port`: receiver endpoints (default `127.0.0.1`).
 - `Apply & Start / Stop Fusion`: start or stop the fused stream.
 - Overlay badge: `Camera <frame> · LiDAR <frame> · <N> projected pts` + render fps.
@@ -254,6 +257,9 @@ All HTTP routing. Static files under `/static/*` are served from `view/static/`.
 | GET    | `/api/fusion_ensure`          | Start camera + LiDAR receivers for fusion |
 | GET    | `/api/fusion_render_options`  | Set projected-point size / color mode    |
 | POST   | `/api/fusion_config`          | Configure calibration from vehicle JSON  |
+| GET    | `/api/vehicle_json_files`     | List cached main-vehicle JSONs           |
+| GET    | `/api/vehicle_json`           | Fetch a cached vehicle JSON by name      |
+| POST   | `/api/upload_vehicle_json`    | Save an imported vehicle JSON to cache   |
 | GET    | `/api/gaussian_files`         | List available `.ply` files for GS mode |
 | GET    | `/api/pcd_max_points`         | Read the current static-PCD downsample cap |
 | GET    | `/api/pcd_set_max_points`     | Set the static-PCD downsample cap        |

@@ -942,7 +942,7 @@ refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();_init
 const _CAM_PCD_SECTIONS=['sec-file','sec-play','sec-streaming','sec-dds'];
 let _camMode=false,_camActive=false,_camLastId=-1,_camSourceFrameId=-1,_camDisplayFrameId=-1;
 let _fusionMode=false,_fusionVehicleJson=null,_fusionSensors=[];
-let _fusionActive=false,_fusionLastSequence=-1,_fusionAbort=null,_fusionBlobUrl=null;
+let _fusionActive=false,_fusionLastSequence=-1,_fusionAbort=null,_fusionBlobUrl=null,_fusionPrevColorMode=null;
 let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0,_camLastBuf=null;
 let _camShowFps=true;
 function _camGetCanvasCtx(){
@@ -1059,6 +1059,15 @@ function switchMode(mode){
   _camMode=toCam;
   _fusionMode=toFusion;
   if(!toFusion&&_fusionActive)fusionStop();
+  // Fusion defaults to Intensity color; remember the prior mode to restore on exit.
+  const _cmSel=document.getElementById('color-mode');
+  if(toFusion&&_fusionPrevColorMode===null&&_cmSel){
+    _fusionPrevColorMode=_cmSel.value;
+    _cmSel.value='intensity';applyColorMode('intensity');
+  }else if(!toFusion&&_fusionPrevColorMode!==null){
+    if(_cmSel){_cmSel.value=_fusionPrevColorMode;applyColorMode(_fusionPrevColorMode);}
+    _fusionPrevColorMode=null;
+  }
   document.getElementById('tab-pcd').classList.toggle('active',toPcd);
   document.getElementById('tab-cam').classList.toggle('active',toCam);
   document.getElementById('tab-fusion').classList.toggle('active',toFusion);
@@ -1075,6 +1084,7 @@ function switchMode(mode){
   }
   const secCam=document.getElementById('sec-camera');if(secCam)secCam.style.display=toCam?'':'none';
   const secFusion=document.getElementById('sec-fusion');if(secFusion)secFusion.style.display=toFusion?'':'none';
+  if(toFusion)_fusionRefreshJsonList(document.getElementById('fusion-json-select')?.value||'');
   const secGs=document.getElementById('sec-gs');if(secGs)secGs.style.display=toGs?'':'none';
   const camWrap=document.getElementById('camera-wrap');if(camWrap)camWrap.classList.toggle('active',toCam);
   const fusionWrap=document.getElementById('fusion-wrap');if(fusionWrap)fusionWrap.classList.toggle('active',toFusion);
@@ -1128,22 +1138,51 @@ function _fusionFillSelect(id,category){
   sensors.forEach((s,i)=>{const o=document.createElement('option');o.value=s.path;o.textContent=s.name;o.dataset.index=String(i);el.appendChild(o);});
   if(sensors.length){el.value=sensors[0].path;}
 }
+function _fusionApplyParsedJson(parsed,label){
+  const parameterList=document.getElementById('fusion-parameters');
+  if(parameterList)parameterList.open=false;
+  _fusionVehicleJson=parsed;
+  const found=_fusionWalkSensors(parsed);
+  const seen=new Set();
+  _fusionSensors=found.filter(s=>{const key=s.category+'|'+s.path;if(seen.has(key))return false;seen.add(key);return true;});
+  _fusionFillSelect('fusion-camera-select','camera');
+  _fusionFillSelect('fusion-lidar-select','lidar');
+  const cameras=_fusionSensors.filter(s=>s.category==='camera').length;
+  const lidars=_fusionSensors.filter(s=>s.category==='lidar').length;
+  document.getElementById('fusion-json-name').textContent=label+' · '+cameras+' camera · '+lidars+' lidar';
+  fusionSelectionChanged();
+}
+async function _fusionRefreshJsonList(selectName){
+  try{
+    const r=await fetch('/api/vehicle_json_files',{cache:'no-store'});
+    const j=await r.json();
+    const sel=document.getElementById('fusion-json-select');if(!sel)return;
+    const files=(j&&j.files)||[];
+    sel.innerHTML='<option value="">\u2014 saved vehicle JSON \u2014</option>';
+    files.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});
+    if(selectName&&files.includes(selectName))sel.value=selectName;
+  }catch(_e){}
+}
+async function fusionLoadSavedJson(name){
+  if(!name)return;
+  try{
+    const r=await fetch('/api/vehicle_json?name='+encodeURIComponent(name),{cache:'no-store'});
+    if(!r.ok)throw new Error('not found on server');
+    _fusionApplyParsedJson(await r.json(),name);
+    setStatus('Loaded vehicle JSON: '+name,'ok');
+  }catch(e){setStatus('Load vehicle JSON failed: '+e.message,'err');}
+}
 async function fusionImportVehicleJson(file){
   if(!file)return;
   try{
-    const parameterList=document.getElementById('fusion-parameters');
-    if(parameterList)parameterList.open=false;
-    const parsed=JSON.parse(await file.text());
-    _fusionVehicleJson=parsed;
-    const found=_fusionWalkSensors(parsed);
-    const seen=new Set();
-    _fusionSensors=found.filter(s=>{const key=s.category+'|'+s.path;if(seen.has(key))return false;seen.add(key);return true;});
-    _fusionFillSelect('fusion-camera-select','camera');
-    _fusionFillSelect('fusion-lidar-select','lidar');
-    const cameras=_fusionSensors.filter(s=>s.category==='camera').length;
-    const lidars=_fusionSensors.filter(s=>s.category==='lidar').length;
-    document.getElementById('fusion-json-name').textContent=file.name+' · '+cameras+' camera · '+lidars+' lidar';
-    fusionSelectionChanged();
+    const text=await file.text();
+    _fusionApplyParsedJson(JSON.parse(text),file.name);
+    // Persist to the server cache so it can be re-selected without re-importing.
+    try{
+      const r=await fetch('/api/upload_vehicle_json',{method:'POST',headers:{'X-Filename':encodeURIComponent(file.name)},body:text});
+      const j=await r.json();
+      if(j&&j.ok)await _fusionRefreshJsonList(j.name);
+    }catch(_e){}
     setStatus('Vehicle JSON imported','ok');
   }catch(e){
     _fusionVehicleJson=null;_fusionSensors=[];
@@ -1170,8 +1209,61 @@ function _fusionRelevant(sensor){
     intrinsic:d.intrinsics??d.params??d.camera_matrix??d.capture??d.scan??null
   };
 }
+function _fusionParseUdp(url){
+  const m=/(?:udp|dds):\/\/([^:/]+):(\d+)/i.exec(String(url||''));
+  return m?{ip:m[1],port:m[2]}:null;
+}
+// Best image-stream subscriptionChannel inside a camera sensor node.
+function _fusionCameraChannel(node){
+  let best=null,fallback=null;
+  (function walk(n){
+    if(!n||typeof n!=='object')return;
+    if(Array.isArray(n)){n.forEach(walk);return;}
+    if(typeof n.subscriptionChannel==='string'){
+      const fmt=String(n.format||'').toLowerCase();
+      const isImg=/jpeg|jpg|rgb|yuv|h26|nv12|image/.test(fmt);
+      if(isImg&&n.checked!==false&&!best)best=n.subscriptionChannel;
+      if(!fallback)fallback=n.subscriptionChannel;
+    }
+    Object.values(n).forEach(walk);
+  })(node);
+  return best||fallback;
+}
+// LiDAR point-cloud + DIFOP channels (the node that carries deviceInfoChannel).
+function _fusionLidarChannels(node){
+  let sub=null,info=null;
+  (function walk(n){
+    if(!n||typeof n!=='object')return;
+    if(Array.isArray(n)){n.forEach(walk);return;}
+    if(typeof n.deviceInfoChannel==='string'){
+      info=info||n.deviceInfoChannel;
+      if(typeof n.subscriptionChannel==='string')sub=sub||n.subscriptionChannel;
+    }
+    Object.values(n).forEach(walk);
+  })(node);
+  if(!sub){(function walk(n){if(!n||typeof n!=='object')return;if(Array.isArray(n)){n.forEach(walk);return;}if(typeof n.subscriptionChannel==='string')sub=sub||n.subscriptionChannel;Object.values(n).forEach(walk);})(node);}
+  return {sub,info};
+}
 function fusionSelectionChanged(){
   const camera=_fusionSelectedSensor('camera'),lidar=_fusionSelectedSensor('lidar');
+  // Auto-fill receiver endpoints from the selected sensors' subscription channels
+  // so switching between multiple cameras/lidars updates the ports to match.
+  if(camera){
+    const cc=_fusionParseUdp(_fusionCameraChannel(camera.data));
+    if(cc){
+      const cp=document.getElementById('fusion-camera-port');if(cp)cp.value=cc.port;
+      const ip=document.getElementById('fusion-lidar-ip');if(ip&&cc.ip)ip.value=cc.ip;
+    }
+  }
+  if(lidar){
+    const lc=_fusionLidarChannels(lidar.data);
+    const sub=_fusionParseUdp(lc.sub),info=_fusionParseUdp(lc.info);
+    if(sub){
+      const lp=document.getElementById('fusion-lidar-port');if(lp)lp.value=sub.port;
+      const ip=document.getElementById('fusion-lidar-ip');if(ip&&sub.ip)ip.value=sub.ip;
+    }
+    if(info){const ipr=document.getElementById('fusion-info-port');if(ipr)ipr.value=info.port;}
+  }
   const box=document.getElementById('fusion-calibration-summary');if(!box)return;
   if(!camera||!lidar){
     box.textContent='JSON imported, but both a camera and a LiDAR sensor are required.';
@@ -1180,6 +1272,32 @@ function fusionSelectionChanged(){
   box.textContent='Camera\n'+JSON.stringify(_fusionRelevant(camera),null,2)
     +'\n\nLiDAR\n'+JSON.stringify(_fusionRelevant(lidar),null,2)
     +'\n\nReady for display.py calibration.';
+  // If fusion is already running, live-recompute the projection matrix and
+  // rebind receivers to the newly selected camera/LiDAR (ports + calibration).
+  if(_fusionActive){
+    _fusionApply(camera,lidar).then(()=>{
+      _fusionLastSequence=-1;
+      setStatus('Fusion re-applied: '+camera.name+' + '+lidar.name,'ok');
+    }).catch(e=>setStatus('Fusion re-apply failed: '+e.message,'err'));
+  }
+}
+async function _fusionApply(camera,lidar){
+  // Recompute the projection matrix (server-side) for the given sensors and
+  // (re)bind the receivers to their ports — shared by start and live re-select.
+  const configResponse=await fetch('/api/fusion_config',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({camera:camera.data,lidar:lidar.data})
+  });
+  const configured=await configResponse.json();
+  if(!configured.ok)throw new Error(configured.error||'configuration failed');
+  const ip=(document.getElementById('fusion-lidar-ip')?.value||'127.0.0.1').trim();
+  const q=new URLSearchParams({
+    lidar_ip:ip,lidar_port:document.getElementById('fusion-lidar-port')?.value||'6699',
+    info_port:document.getElementById('fusion-info-port')?.value||'7788',
+    camera_ip:ip,camera_port:document.getElementById('fusion-camera-port')?.value||'13956'
+  });
+  const started=await fetch('/api/fusion_ensure?'+q).then(r=>r.json());
+  if(!started.ok)throw new Error(started.error||'receiver start failed');
 }
 async function fusionStart(){
   if(_fusionActive){fusionStop();return;}
@@ -1188,20 +1306,7 @@ async function fusionStart(){
   const status=document.getElementById('fusion-run-status');
   try{
     status.textContent='applying calibration…';
-    const configResponse=await fetch('/api/fusion_config',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({camera:camera.data,lidar:lidar.data})
-    });
-    const configured=await configResponse.json();
-    if(!configured.ok)throw new Error(configured.error||'configuration failed');
-    const ip=(document.getElementById('fusion-lidar-ip')?.value||'127.0.0.1').trim();
-    const q=new URLSearchParams({
-      lidar_ip:ip,lidar_port:document.getElementById('fusion-lidar-port')?.value||'6699',
-      info_port:document.getElementById('fusion-info-port')?.value||'7788',
-      camera_ip:ip,camera_port:document.getElementById('fusion-camera-port')?.value||'13956'
-    });
-    const started=await fetch('/api/fusion_ensure?'+q).then(r=>r.json());
-    if(!started.ok)throw new Error(started.error||'receiver start failed');
+    await _fusionApply(camera,lidar);
     _fusionSyncViewOptions();
     _fusionActive=true;_fusionLastSequence=-1;
     status.textContent='waiting for camera/LiDAR frames…';
@@ -1222,11 +1327,10 @@ function _fusionSyncViewOptions(){
 function fusionStop(){
   _fusionActive=false;
   if(_fusionAbort){_fusionAbort.abort();_fusionAbort=null;}
-  if(_fusionBlobUrl){URL.revokeObjectURL(_fusionBlobUrl);_fusionBlobUrl=null;}
-  const img=document.getElementById('fusion-img');if(img){img.src='';img.style.display='none';}
-  document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','flex');
+  // Keep the last fused frame on screen (don't clear img / revoke blob / show
+  // the empty placeholder) so the result stays visible after stopping.
   document.getElementById('fusion-start-btn').textContent='🔗 Apply & Start Fusion';
-  document.getElementById('fusion-run-status').textContent='off';
+  document.getElementById('fusion-run-status').textContent='stopped · last frame retained';
 }
 async function _fusionPoll(){
   while(_fusionActive&&_fusionMode){

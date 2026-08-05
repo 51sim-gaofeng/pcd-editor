@@ -47,7 +47,8 @@ def get_render_options() -> dict:
 
 
 def _rotation_zyx(roll: float, pitch: float, yaw: float) -> np.ndarray:
-    roll, pitch, yaw = np.deg2rad([roll, pitch, yaw])
+    # inputs already in radians (see _pose: SimOne vehicle-JSON roll/pitch/yaw
+    # are radians, e.g. a rear camera has yaw=pi)
     cr, sr, cp, sp, cy, sy = np.cos(roll), np.sin(roll), np.cos(pitch), np.sin(pitch), np.cos(yaw), np.sin(yaw)
     rx = np.array([[1,0,0],[0,cr,-sr],[0,sr,cr]])
     ry = np.array([[cp,0,sp],[0,1,0],[-sp,0,cp]])
@@ -77,8 +78,10 @@ def _pose(sensor: dict):
         translation = np.array([_value(pose,'x'), _value(pose,'y'), _value(pose,'z')], np.float64)
     r = _value(pose, 'roll_pitch_yaw_deg', 'rotation', default=None)
     if isinstance(r, list) and len(r) >= 3:
-        angles = [float(x) for x in r[:3]]
+        # *_deg / rotation list are in degrees; convert to radians.
+        angles = list(np.deg2rad([float(x) for x in r[:3]]))
     else:
+        # Plain roll/pitch/yaw from SimOne vehicle JSON are already radians.
         angles = [_value(pose,'roll'), _value(pose,'pitch'), _value(pose,'yaw')]
     return translation, _rotation_zyx(*angles)
 

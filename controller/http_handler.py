@@ -390,6 +390,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/app_info':
             self._json(get_app_info())
 
+        elif path == '/api/vehicle_json_files':
+            self._json({'files': self._list_vehicle_json()})
+
+        elif path == '/api/vehicle_json':
+            self._serve_vehicle_json(params.get('name', [''])[0])
+
         elif path == '/api/welcome_pref':
             self._json({'show_welcome_on_startup': get_welcome_pref()})
 
@@ -404,6 +410,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_upload_pcd(); return
         if parsed.path == '/api/upload_ply':
             self._handle_upload_ply(); return
+        if parsed.path == '/api/upload_vehicle_json':
+            self._handle_upload_vehicle_json(); return
         length = int(self.headers.get('Content-Length', 0))
         body   = self.rfile.read(length)
         if parsed.path == '/api/trajectory':
@@ -603,6 +611,62 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(data)
             rel = os.path.relpath(full, config.data_dir).replace('\\', '/')
             self._json({'ok': True, 'file': rel, 'abs': full, 'size': length})
+        except Exception as e:
+            try: self._json({'ok': False, 'error': str(e)})
+            except Exception: pass
+
+    def _vehicle_json_dir(self):
+        from config import config
+        return os.path.join(config.data_dir, '_vehicles')
+
+    def _list_vehicle_json(self):
+        d = self._vehicle_json_dir()
+        try:
+            return sorted(f for f in os.listdir(d) if f.lower().endswith('.json'))
+        except OSError:
+            return []
+
+    def _serve_vehicle_json(self, name: str):
+        name = os.path.basename(name or '')
+        if not name.lower().endswith('.json'):
+            self.send_error(404); return
+        full = os.path.join(self._vehicle_json_dir(), name)
+        if not os.path.isfile(full):
+            self.send_error(404); return
+        try:
+            with open(full, 'rb') as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            self.wfile.write(data)
+        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _handle_upload_vehicle_json(self):
+        """Persist an imported main-vehicle JSON so it can be re-selected later."""
+        from urllib.parse import unquote
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            if length <= 0:
+                self._json({'ok': False, 'error': 'empty upload'}); return
+            raw_name = self.headers.get('X-Filename', '') or 'vehicle.json'
+            try: raw_name = unquote(raw_name)
+            except Exception: pass
+            safe = ''.join(c for c in os.path.basename(raw_name) if c.isalnum() or c in '._- ').strip(' .')
+            if not safe:
+                safe = 'vehicle.json'
+            if not safe.lower().endswith('.json'):
+                safe += '.json'
+            d = self._vehicle_json_dir()
+            os.makedirs(d, exist_ok=True)
+            data = self.rfile.read(length)
+            # Overwrite same-named config (re-importing shouldn't pile up copies).
+            with open(os.path.join(d, safe), 'wb') as f:
+                f.write(data)
+            self._json({'ok': True, 'name': safe})
         except Exception as e:
             try: self._json({'ok': False, 'error': str(e)})
             except Exception: pass

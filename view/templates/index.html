@@ -178,6 +178,9 @@
                 onclick="document.getElementById('fusion-json-file').click()">
           &#128194; Import Main Vehicle JSON
         </button>
+        <select id="fusion-json-select" class="full" style="margin-top:6px" onchange="fusionLoadSavedJson(this.value)">
+          <option value="">&#8212; saved vehicle JSON &#8212;</option>
+        </select>
         <div id="fusion-json-name" class="fusion-hint">No vehicle JSON imported</div>
         <div class="fusion-picker-grid">
           <label>Camera
