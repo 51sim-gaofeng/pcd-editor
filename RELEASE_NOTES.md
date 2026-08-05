@@ -114,7 +114,7 @@
   ```bash
   # 默认启动（Streaming 监听 127.0.0.1:8000）
   python pcd_viewer.py --dir /path/to/pcd
-  
+
   # 自定义 Streaming 接收端口和 IP（远程 Lidar）
   python pcd_viewer.py --dir /path/to/pcd --streaming-udp-port 8001 --streaming-udp-ip 0.0.0.0
   ```

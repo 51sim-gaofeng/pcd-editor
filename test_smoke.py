@@ -104,10 +104,10 @@ def main():
         if not os.path.exists(EXE):
             print(f"ERROR: exe not found at {EXE}")
             sys.exit(1)
-        cmd   = [EXE, "--port", str(PORT), "--no-window"]
+        cmd   = [EXE, "--port", str(PORT), "--ip", HOST, "--no-window"]
         label = f"exe ({EXE})"
     else:
-        cmd   = [sys.executable, SCRIPT, "--port", str(PORT), "--no-window"]
+        cmd   = [sys.executable, SCRIPT, "--port", str(PORT), "--ip", HOST, "--no-window"]
         label = f"source ({SCRIPT})"
 
     ok = run_smoke(cmd, label)

@@ -126,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
         path   = parsed.path
         params = parse_qs(parsed.query)
 
-        
+
         # Browsers request favicon.ico automatically. We don't ship one, so
         # return an empty success-like response to avoid noisy 404 logs.
         if path == '/favicon.ico':
@@ -137,7 +137,7 @@ class Handler(BaseHTTPRequestHandler):
             except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
                 pass
             return
-        
+
         if path == '/':
             self._html(view.get_template('index.html'))
 
@@ -311,6 +311,50 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/camera_rebind':
             self._handle_camera_rebind(params)
 
+        elif path == '/api/fusion_ensure':
+            try:
+                from model.camera_model import start_udp_listener as cam_start
+                streaming_rebind_udp(
+                    params.get('lidar_ip', ['127.0.0.1'])[0],
+                    int(params.get('lidar_port', ['6699'])[0]),
+                    int(params.get('info_port', ['7788'])[0]))
+                cam_start(port=int(params.get('camera_port', ['13956'])[0]),
+                          host=params.get('camera_ip', ['127.0.0.1'])[0])
+                self._json({'ok': True})
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
+
+        elif path == '/api/fusion_status':
+            from model.fusion_model import get_status as fusion_status
+            self._json(fusion_status())
+
+        elif path == '/api/fusion_frame':
+            try:
+                after = int(params.get('after', ['-1'])[0])
+            except (ValueError, IndexError):
+                after = -1
+            from model.fusion_model import get_frame as fusion_frame
+            seq, jpeg, meta = fusion_frame(after, 2.0)
+            if jpeg is None:
+                self._json({'changed': False, 'sequence': seq, **meta})
+            else:
+                try:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'image/jpeg')
+                    self.send_header('X-Fusion-Sequence', str(seq))
+                    self.send_header('X-Camera-Frame', str(meta.get('camera_frame', -1)))
+                    self.send_header('X-Lidar-Frame', str(meta.get('lidar_frame', -1)))
+                    self.send_header('X-Projected-Points', str(meta.get('projected_points', 0)))
+                    self.send_header('X-Match-Residual-Ms', str(meta.get('match_residual_ms', -1)))
+                    self.send_header('X-Render-Fps', str(meta.get('render_fps', -1)))
+                    self.send_header('X-Render-Avg-Ms', str(meta.get('render_avg_ms', -1)))
+                    self.send_header('Cache-Control', 'no-store')
+                    self.send_header('Content-Length', str(len(jpeg)))
+                    self.end_headers()
+                    self.wfile.write(jpeg)
+                except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+                    pass
+
         elif path == '/api/gaussian_files':
             try:
                 self._json({'files': list_gaussian_files()})
@@ -358,6 +402,13 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_traj_export(body)
         elif parsed.path == '/api/welcome_pref':
             self._handle_welcome_pref_post(body)
+        elif parsed.path == '/api/fusion_config':
+            try:
+                data = json.loads(body or b'{}')
+                from model.fusion_model import configure
+                self._json(configure(data.get('camera') or {}, data.get('lidar') or {}))
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
         else:
             self.send_error(404)
 
@@ -666,15 +717,18 @@ class Handler(BaseHTTPRequestHandler):
             after_id = int(params.get('after', ['-1'])[0])
         except (ValueError, IndexError):
             after_id = -1
-        from model.camera_model import get_latest_frame_blocking as cam_frame
-        fid, jpeg = cam_frame(after_id, timeout=2.0)
+        from model.camera_model import get_latest_frame_blocking as cam_frame, get_status as cam_status
+        fid, source_fid, jpeg = cam_frame(after_id, timeout=2.0)
         if jpeg is None:
-            self._json({'frame_id': fid, 'changed': False})
+            self._json({'frame_id': fid, 'source_frame_id': source_fid, 'changed': False})
             return
+        display_fid = cam_status().get('display_frame_id', source_fid)
         try:
             self.send_response(200)
             self.send_header('Content-Type', 'image/jpeg')
             self.send_header('X-Frame-Id', str(fid))
+            self.send_header('X-Source-Frame-Id', str(source_fid))
+            self.send_header('X-Display-Frame-Id', str(display_fid))
             self.send_header('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate')
             self.send_header('Pragma', 'no-cache')
             self.send_header('Content-Length', str(len(jpeg)))
@@ -749,4 +803,3 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
         except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
             pass
-

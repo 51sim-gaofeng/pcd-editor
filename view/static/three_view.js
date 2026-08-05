@@ -964,6 +964,3 @@ window._three={
     if(_sceneAxesRoot)_sceneAxesRoot.visible=!!on;
   }
 };
-
-
-

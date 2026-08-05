@@ -418,4 +418,13 @@ Use the same pipeline for every release (starting from `v0.1.4`):
 Notes:
 - `sample/garbage_truck1.ply` is included in sample assets and should be shipped together with other samples.
 - `test_gs_smoke.py` verifies 3DGS endpoints, including PLY upload.
+## SimOne Streaming API runtime
+
+The Windows Streaming API runtime is stored in
+`runtime/simone/Win64`. Both direct Python execution and the PyInstaller
+build use this repository-relative directory, so users do not need the same
+SimOne installation path or drive letter as the original developer.
+
+`SIMONE_API_DIR` (runtime) and `SIMONE_STREAMING_DLL` (PyInstaller build) are
+optional overrides for testing another SDK version.
 

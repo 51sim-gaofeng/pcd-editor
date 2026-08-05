@@ -143,7 +143,7 @@ def init_from_args(argv):
     ap.add_argument('--udp-port', type=int, default=9870, dest='udp_port',
                     help='UDP port for DDS live point cloud (default: 9870)')
     ap.add_argument('--udp-ip', type=str, default='255.255.255.255', dest='udp_host',
-                    help='UDP bind address for DDS receiver (default: 127.0.0.1)')
+                    help='UDP bind address for DDS receiver (default: 255.255.255.255)')
     ap.add_argument('--dds-ws-port', type=int, default=None, dest='dds_ws_port',
                     help='WebSocket port for DDS live stream (default: HTTP port + 1)')
     ap.add_argument('--streaming-udp-port', type=int, default=6699, dest='streaming_udp_port',

@@ -61,7 +61,7 @@ def run():
         print(f"FAIL: sample file not found: {SAMPLE_PLY}")
         return 1
 
-    cmd = [sys.executable, SCRIPT, "--port", str(PORT), "--no-window"]
+    cmd = [sys.executable, SCRIPT, "--port", str(PORT), "--ip", HOST, "--no-window"]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
     uploaded_rel = None

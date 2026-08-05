@@ -940,7 +940,9 @@ async function loadFileAbs(absPath){
 refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();_initWelcomeOnStartup();
 // 鈹€鈹€ Camera mode (GVSP UDP receiver) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 const _CAM_PCD_SECTIONS=['sec-file','sec-play','sec-streaming','sec-dds'];
-let _camMode=false,_camActive=false,_camLastId=-1;
+let _camMode=false,_camActive=false,_camLastId=-1,_camSourceFrameId=-1,_camDisplayFrameId=-1;
+let _fusionMode=false,_fusionVehicleJson=null,_fusionSensors=[];
+let _fusionActive=false,_fusionLastSequence=-1,_fusionAbort=null,_fusionBlobUrl=null;
 let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0,_camLastBuf=null;
 let _camShowFps=true;
 function _camGetCanvasCtx(){
@@ -1050,29 +1052,35 @@ async function _camDrainFrames(){
 }
 function switchMode(mode){
   const toCam=mode==='cam';
+  const toFusion=mode==='fusion';
   const toGs=mode==='gs';
-  const toPcd=!toCam&&!toGs;
-  if(_camMode===(mode==='cam')&&!toGs){if(!toPcd)return;}
+  const toPcd=!toCam&&!toFusion&&!toGs;
+  if(_camMode===toCam&&_fusionMode===toFusion&&!toGs){if(!toPcd)return;}
   _camMode=toCam;
+  _fusionMode=toFusion;
+  if(!toFusion&&_fusionActive)fusionStop();
   document.getElementById('tab-pcd').classList.toggle('active',toPcd);
   document.getElementById('tab-cam').classList.toggle('active',toCam);
+  document.getElementById('tab-fusion').classList.toggle('active',toFusion);
   const tabGs=document.getElementById('tab-gs');if(tabGs)tabGs.classList.toggle('active',toGs);
-  _CAM_PCD_SECTIONS.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toGs)?'none':'';});
+  _CAM_PCD_SECTIONS.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion||toGs)?'none':'';});
   // View/Edit Cloud/Trajectory toolbar also works in 3DGS mode (same camera/scene),
   // just not in Camera mode (no 3D scene there at all).
   const vpToolbar=document.getElementById('viewport-toolbar');if(vpToolbar)vpToolbar.style.display=toCam?'none':'';
   if(toCam)closeViewportPanel();
-  if(toCam||toGs){
+  if(toCam||toFusion||toGs){
     _stopPlay();               // stop PCD playback loop so it can't keep re-adding the cloud
     if(_smActive)streamingStop();
     if(_ddsActive)ddsStop();
   }
   const secCam=document.getElementById('sec-camera');if(secCam)secCam.style.display=toCam?'':'none';
+  const secFusion=document.getElementById('sec-fusion');if(secFusion)secFusion.style.display=toFusion?'':'none';
   const secGs=document.getElementById('sec-gs');if(secGs)secGs.style.display=toGs?'':'none';
   const camWrap=document.getElementById('camera-wrap');if(camWrap)camWrap.classList.toggle('active',toCam);
-  ['cv','lasso-canvas'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=toCam?'none':'';});
-  const axesLabel=document.getElementById('axes-label');if(axesLabel)axesLabel.style.display=toCam?'none':'';
-  const ovl=document.getElementById('overlay');if(ovl)ovl.style.display=(toCam||toGs)?'none':'';
+  const fusionWrap=document.getElementById('fusion-wrap');if(fusionWrap)fusionWrap.classList.toggle('active',toFusion);
+  ['cv','lasso-canvas'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion)?'none':'';});
+  const axesLabel=document.getElementById('axes-label');if(axesLabel)axesLabel.style.display=(toCam||toFusion)?'none':'';
+  const ovl=document.getElementById('overlay');if(ovl)ovl.style.display=(toCam||toFusion||toGs)?'none':'';
   const ovlText=ovl?.querySelector('span:last-child');if(ovlText)ovlText.textContent=toGs?'':'Select a PCD file';
   setGsOverlay(toGs?'idle':'hidden');
   if(!toCam){
@@ -1093,6 +1101,153 @@ function switchMode(mode){
     window._three?.setSceneAxesVisible?.(true);
   }
   if(!toGs&&window._gaussian){window._gaussian.dispose();}
+}
+
+function _fusionWalkSensors(value,path='',out=[]){
+  if(!value||typeof value!=='object')return out;
+  if(Array.isArray(value)){value.forEach((v,i)=>_fusionWalkSensors(v,path+'['+i+']',out));return out;}
+  const text=[value.category,value.type,value.classId,value.sensorClass,value.sensorType,value.name,value.id]
+    .filter(v=>v!==undefined&&v!==null).join(' ').toLowerCase();
+  let category='';
+  if(/camera|image|rgb/.test(text))category='camera';
+  else if(/lidar|laser|point.?cloud/.test(text))category='lidar';
+  const hasPose=['x','y','z','roll','pitch','yaw','position','rotation','extrinsic','mounting_pose_relative_to_agent']
+    .some(k=>Object.prototype.hasOwnProperty.call(value,k));
+  const hasParams=['params','intrinsics','camera_matrix','distortion','capture','scan']
+    .some(k=>Object.prototype.hasOwnProperty.call(value,k));
+  if(category&&(hasPose||hasParams)){
+    out.push({category,path,id:String(value.id??value.sensorId??path),name:String(value.name??value.sensorName??value.id??path),data:value});
+  }
+  Object.entries(value).forEach(([k,v])=>_fusionWalkSensors(v,path?(path+'.'+k):k,out));
+  return out;
+}
+function _fusionFillSelect(id,category){
+  const el=document.getElementById(id);if(!el)return;
+  const sensors=_fusionSensors.filter(s=>s.category===category);
+  el.innerHTML='<option value="">— select '+category+' —</option>';
+  sensors.forEach((s,i)=>{const o=document.createElement('option');o.value=s.path;o.textContent=s.name;o.dataset.index=String(i);el.appendChild(o);});
+  if(sensors.length){el.value=sensors[0].path;}
+}
+async function fusionImportVehicleJson(file){
+  if(!file)return;
+  try{
+    const parameterList=document.getElementById('fusion-parameters');
+    if(parameterList)parameterList.open=false;
+    const parsed=JSON.parse(await file.text());
+    _fusionVehicleJson=parsed;
+    const found=_fusionWalkSensors(parsed);
+    const seen=new Set();
+    _fusionSensors=found.filter(s=>{const key=s.category+'|'+s.path;if(seen.has(key))return false;seen.add(key);return true;});
+    _fusionFillSelect('fusion-camera-select','camera');
+    _fusionFillSelect('fusion-lidar-select','lidar');
+    const cameras=_fusionSensors.filter(s=>s.category==='camera').length;
+    const lidars=_fusionSensors.filter(s=>s.category==='lidar').length;
+    document.getElementById('fusion-json-name').textContent=file.name+' · '+cameras+' camera · '+lidars+' lidar';
+    fusionSelectionChanged();
+    setStatus('Vehicle JSON imported','ok');
+  }catch(e){
+    _fusionVehicleJson=null;_fusionSensors=[];
+    document.getElementById('fusion-json-name').textContent='Import failed: '+e.message;
+    document.getElementById('fusion-calibration-summary').textContent='Invalid vehicle JSON.';
+    setStatus('Vehicle JSON import failed','err');
+  }finally{
+    const input=document.getElementById('fusion-json-file');if(input)input.value='';
+  }
+}
+function _fusionSelectedSensor(category){
+  const id=category==='camera'?'fusion-camera-select':'fusion-lidar-select';
+  const path=document.getElementById(id)?.value||'';
+  return _fusionSensors.find(s=>s.category===category&&s.path===path)||null;
+}
+function _fusionRelevant(sensor){
+  if(!sensor)return null;
+  const d=sensor.data;
+  return {
+    id:sensor.id,name:sensor.name,json_path:sensor.path,
+    extrinsic:d.extrinsic??d.mounting_pose_relative_to_agent??d.pose??{
+      x:d.x,y:d.y,z:d.z,roll:d.roll,pitch:d.pitch,yaw:d.yaw
+    },
+    intrinsic:d.intrinsics??d.params??d.camera_matrix??d.capture??d.scan??null
+  };
+}
+function fusionSelectionChanged(){
+  const camera=_fusionSelectedSensor('camera'),lidar=_fusionSelectedSensor('lidar');
+  const box=document.getElementById('fusion-calibration-summary');if(!box)return;
+  if(!camera||!lidar){
+    box.textContent='JSON imported, but both a camera and a LiDAR sensor are required.';
+    return;
+  }
+  box.textContent='Camera\n'+JSON.stringify(_fusionRelevant(camera),null,2)
+    +'\n\nLiDAR\n'+JSON.stringify(_fusionRelevant(lidar),null,2)
+    +'\n\nReady for display.py calibration.';
+}
+async function fusionStart(){
+  if(_fusionActive){fusionStop();return;}
+  const camera=_fusionSelectedSensor('camera'),lidar=_fusionSelectedSensor('lidar');
+  if(!camera||!lidar){setStatus('Select one camera and one LiDAR','err');return;}
+  const status=document.getElementById('fusion-run-status');
+  try{
+    status.textContent='applying calibration…';
+    const configResponse=await fetch('/api/fusion_config',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({camera:camera.data,lidar:lidar.data})
+    });
+    const configured=await configResponse.json();
+    if(!configured.ok)throw new Error(configured.error||'configuration failed');
+    const ip=(document.getElementById('fusion-lidar-ip')?.value||'127.0.0.1').trim();
+    const q=new URLSearchParams({
+      lidar_ip:ip,lidar_port:document.getElementById('fusion-lidar-port')?.value||'6699',
+      info_port:document.getElementById('fusion-info-port')?.value||'7788',
+      camera_ip:ip,camera_port:document.getElementById('fusion-camera-port')?.value||'13956'
+    });
+    const started=await fetch('/api/fusion_ensure?'+q).then(r=>r.json());
+    if(!started.ok)throw new Error(started.error||'receiver start failed');
+    _fusionActive=true;_fusionLastSequence=-1;
+    status.textContent='waiting for camera/LiDAR frames…';
+    document.getElementById('fusion-start-btn').textContent='⏹ Stop Fusion';
+    void _fusionPoll();
+  }catch(e){status.textContent='error: '+e.message;setStatus('Fusion start failed','err');}
+}
+function fusionStop(){
+  _fusionActive=false;
+  if(_fusionAbort){_fusionAbort.abort();_fusionAbort=null;}
+  if(_fusionBlobUrl){URL.revokeObjectURL(_fusionBlobUrl);_fusionBlobUrl=null;}
+  const img=document.getElementById('fusion-img');if(img){img.src='';img.style.display='none';}
+  document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','flex');
+  document.getElementById('fusion-start-btn').textContent='🔗 Apply & Start Fusion';
+  document.getElementById('fusion-run-status').textContent='off';
+}
+async function _fusionPoll(){
+  while(_fusionActive&&_fusionMode){
+    _fusionAbort=new AbortController();
+    try{
+      const r=await fetch('/api/fusion_frame?after='+_fusionLastSequence,{signal:_fusionAbort.signal,cache:'no-store'});
+      const ct=r.headers.get('content-type')||'';
+      if(ct.includes('json')){await new Promise(resolve=>setTimeout(resolve,100));continue;}
+      const seq=parseInt(r.headers.get('x-fusion-sequence')||'-1',10);
+      const cameraFrame=r.headers.get('x-camera-frame')||'-1';
+      const lidarFrame=r.headers.get('x-lidar-frame')||'-1';
+      const projected=r.headers.get('x-projected-points')||'0';
+      const renderFps=r.headers.get('x-render-fps')||'-1';
+      const renderAvgMs=r.headers.get('x-render-avg-ms')||'-1';
+      const buffer=await r.arrayBuffer();
+      if(!buffer.byteLength)continue;
+      _fusionLastSequence=seq;
+      const next=URL.createObjectURL(new Blob([buffer],{type:'image/jpeg'}));
+      const previous=_fusionBlobUrl;_fusionBlobUrl=next;
+      const img=document.getElementById('fusion-img');
+      img.onload=()=>{if(previous)URL.revokeObjectURL(previous);img.style.display='block';document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','none');};
+      img.src=next;
+      const badge=document.getElementById('fusion-badge');
+      const perfLabel=renderFps!=='-1'?(' · render '+renderFps+' fps ('+renderAvgMs+'ms/frame)'):'';
+      badge.style.display='block';badge.textContent='Camera '+cameraFrame+' · LiDAR '+lidarFrame+' · '+projected+' projected pts'+perfLabel;
+      document.getElementById('fusion-run-status').textContent='running · sequence '+seq;
+    }catch(e){
+      if(e.name==='AbortError'||!_fusionActive||!_fusionMode)break;
+      await new Promise(resolve=>setTimeout(resolve,250));
+    }
+  }
+  _fusionAbort=null;
 }
 // ── Viewport toolbar (View / Trajectory / Edit Cloud floating panel) ───────
 const _VP_TITLES={view:'View',traj:'Trajectory',edit:'Edit Cloud'};
@@ -1132,7 +1287,7 @@ async function camConnect(){
     const r=await fetch('/api/camera_ensure?ip='+encodeURIComponent(ip)+'&port='+port);
     const d=await r.json();
     if(!d.started){setStatus('Camera connect failed: '+(d.error||'unknown'),'err');return;}
-    _camActive=true;_camLastId=-1;
+    _camActive=true;_camLastId=-1;_camDisplayFrameId=-1;
     _camResetRender();
     const btnC=document.getElementById('btn-cam-connect');if(btnC){btnC.innerHTML='&#9209; Stop';btnC.style.background='#dc2626';}
     const stEl=document.getElementById('cam-status');if(stEl){stEl.textContent='listening\u2026';stEl.style.color='#facc15';}
@@ -1152,8 +1307,15 @@ async function _camPollLoop(){
       const ct=r.headers.get('content-type')||'';
       if(ct.includes('json'))continue;
       const fid=parseInt(r.headers.get('x-frame-id')||'-1',10);
+      const sourceFid=parseInt(r.headers.get('x-source-frame-id')||String(fid),10);
+      const displayFid=parseInt(r.headers.get('x-display-frame-id')||String(sourceFid),10);
       const buf=await r.arrayBuffer();
-      if(buf.byteLength>0){_camLastId=fid;_camQueueFrame(fid,buf);}
+      if(buf.byteLength>0){
+        _camLastId=fid;_camSourceFrameId=sourceFid;_camDisplayFrameId=displayFid;
+        // Show source_frame_id normally, but fall back to the GVSP block_id when
+        // source_frame_id is implausibly large (e.g. a mis-decoded simone3.x sender).
+        _camQueueFrame(displayFid,buf);
+      }
     }catch(e){
       if(e.name==='AbortError')break;
       if(!_camActive||!_camMode)break;
@@ -1168,7 +1330,7 @@ async function _camPollLoop(){
   if(!wrap||typeof ResizeObserver==='undefined')return;
   new ResizeObserver(()=>{
     if(!_camMode||!_camLastBuf)return;
-    _camQueueFrame(_camLastId,_camLastBuf);
+    _camQueueFrame(_camDisplayFrameId>=0?_camDisplayFrameId:_camLastId,_camLastBuf);
   }).observe(wrap);
 })();
 
@@ -1448,7 +1610,7 @@ setInterval(_refreshGsInfo,300);
 const _sidebar=document.getElementById('sidebar');
 const _handle=document.getElementById('resize-handle');
 const _toggle=document.getElementById('sidebar-toggle');
-let _sidebarW=280,_collapsed=false;
+let _sidebarW=360,_collapsed=false;
 function toggleSidebar(){
   _collapsed=!_collapsed;
   if(_collapsed){_sidebar.classList.add('collapsed');_sidebar.style.width='';_toggle.innerHTML='&#9654;';_handle.style.cursor='default';}
@@ -1461,7 +1623,7 @@ _handle.addEventListener('mousedown',e=>{
   _handle.classList.add('dragging');
   const startX=e.clientX,startW=_sidebar.offsetWidth;
   function onMove(e){
-    const w=Math.max(140,Math.min(600,startW+(e.clientX-startX)));
+    const w=Math.max(280,Math.min(700,startW+(e.clientX-startX)));
     _sidebarW=w;_sidebar.style.width=w+'px';
     if(window._three&&window._three.resize)window._three.resize();
   }
@@ -1562,4 +1724,3 @@ async function _initWelcomeOnStartup(){
     if(d.show_welcome_on_startup)showWelcomeModal();
   }catch(e){/* ignore: keep welcome modal hidden if the backend is unreachable */}
 }
-

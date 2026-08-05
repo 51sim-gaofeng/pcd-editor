@@ -1,11 +1,11 @@
-"""GVSP UDP camera frame receiver.
+﻿"""GVSP UDP camera frame receiver.
 
 Receives JPEG frames packaged in GVSP protocol (EI=1 mode, 20-byte header).
 Compatible with the send_frame_via_gvsp() sender in utils/common/udp_utils.py.
 
 Frame structure per block:
   pkt_id 0:    Leader  — 20B GVSP header + 32B image meta
-  pkt_id 1..N: Payload — 20B GVSP header + ≤1480B JPEG data
+  pkt_id 1..N: Payload — 20B GVSP header + ≈1480B JPEG data
   pkt_id N+1:  Trailer — 20B GVSP header + 4B end marker
 
 20-byte EI=1 GVSP header (big-endian):
@@ -18,6 +18,7 @@ import socket
 import struct
 import threading
 import time
+from collections import deque
 
 _HDR_FMT  = '>HHBBHIII'
 _HDR_SIZE = struct.calcsize(_HDR_FMT)  # 20 bytes
@@ -34,10 +35,12 @@ _cam_cond = threading.Condition(_cam_lock)
 
 _cam_jpeg: bytes = b''
 _cam_frame_id: int = -1
+_cam_source_frame_id: int = -1
+_cam_block_id: int = -1  # raw GVSP block_id of the last completed frame (see _process_gvsp_packet)
 _cam_recv_count: int = 0
 _cam_last_ts: float = 0.0
 _cam_bind_host: str = '127.0.0.1'
-_cam_bind_port: int = 13956
+_cam_bind_port: int = 9870
 _cam_running: bool = False
 
 _listener_thread = None
@@ -49,6 +52,8 @@ _reassembly: dict = {}
 _reassembly_lock = threading.Lock()
 _REASSEMBLY_TTL = 1.0
 _REASSEMBLY_MAX = 32
+
+_cam_fusion_frames = deque(maxlen=60)
 
 
 def _gc_reassembly(now: float) -> None:
@@ -68,6 +73,21 @@ def _format_bind_error(host: str, port: int, err: Exception) -> str:
     return msg
 
 
+# source_frame_id is derived from the sender's GVSP Leader timestamp (see comment
+# below); some senders (e.g. simone3.x) encode it in a way our formula can't parse
+# correctly, producing an implausibly large value. When that happens, fall back to
+# displaying the raw GVSP block_id instead — it's not a clean +1-per-frame counter,
+# but it's still small, unique per frame and monotonic, so it's a better "frame
+# number" stand-in than a broken multi-trillion-ms timestamp.
+_SOURCE_FRAME_ID_TOO_LARGE = 100_000_000_000  # ~3.17 years in ms
+
+
+def _display_frame_id(source_fid: int, block_id: int) -> int:
+    if source_fid < 0:
+        return block_id
+    return block_id if source_fid > _SOURCE_FRAME_ID_TOO_LARGE else source_fid
+
+
 def _process_gvsp_packet(data: bytes) -> None:
     """Parse one GVSP UDP packet and store completed JPEG when all pieces arrive."""
     if len(data) < _HDR_SIZE:
@@ -79,9 +99,19 @@ def _process_gvsp_packet(data: bytes) -> None:
     after_hdr = data[_HDR_SIZE:]
 
     jpeg_ready = None
+    leader_ns = None
     with _reassembly_lock:
         if pkt_fmt == _FMT_LEADER:
-            _reassembly[block_id] = {'payloads': {}, 'ts': now}
+            leader_ns = -1
+            if len(after_hdr) >= _LEADER_META_SIZE:
+                meta = struct.unpack(_LEADER_META_FMT, after_hdr[:_LEADER_META_SIZE])
+                # meta = (id_count, reserved_flag, payload_type, ts_high, ts_low, size_hi, size_lo, size_x, size_y, data_format)
+                ts_high, ts_low = meta[3], meta[4]
+                # Matches send_frame_via_gvsp() in udp_utils.py: ts_high/ts_low are the
+                # high/low 32 bits of one 64-bit nanosecond timestamp (timestamp_ms * 1e6),
+                # NOT seconds+nanoseconds as gvsppacket.h's timestampMS() assumes.
+                leader_ns = (ts_high << 32) | ts_low
+            _reassembly[block_id] = {'payloads': {}, 'ts': now, 'ts_ns': leader_ns}
             _gc_reassembly(now)
 
         elif pkt_fmt == _FMT_PAYLOAD:
@@ -97,14 +127,24 @@ def _process_gvsp_packet(data: bytes) -> None:
                     chunk for part_id in range(1, pkt_id)
                     if (chunk := payloads.get(part_id)) is not None
                 )
+                leader_ns = buf.get('ts_ns', -1)
 
     if jpeg_ready:
         with _cam_cond:
-            global _cam_jpeg, _cam_frame_id, _cam_recv_count, _cam_last_ts
+            global _cam_jpeg, _cam_frame_id, _cam_source_frame_id, _cam_recv_count, _cam_last_ts
+            global _cam_block_id
             _cam_jpeg = jpeg_ready
             _cam_frame_id += 1
+            sim_ns = leader_ns if leader_ns is not None and leader_ns >= 0 else time.time_ns()
+            _cam_source_frame_id = int(sim_ns // 1_000_000)  # ms, for display/logging parity
+            _cam_block_id = block_id
             _cam_recv_count += 1
             _cam_last_ts = time.time()
+            _cam_fusion_frames.append({
+                'source_frame_id': _cam_source_frame_id,
+                'block_id': _cam_block_id,
+                'jpeg': jpeg_ready,
+            })
             _cam_cond.notify_all()
 
 
@@ -207,15 +247,20 @@ def start_udp_listener(port: int, host: str = '127.0.0.1') -> None:
 
 
 def get_latest_frame_blocking(after_id: int, timeout: float = 2.0):
-    """Block until frame_id > after_id. Returns (fid, jpeg_bytes) or (fid, None) on timeout."""
+    """Block until frame_id > after_id. Returns (fid, source_fid, jpeg_bytes) or (fid, fid, None) on timeout."""
     deadline = time.monotonic() + timeout
     with _cam_cond:
         while _cam_frame_id <= after_id:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return _cam_frame_id, None
+                return _cam_frame_id, _cam_source_frame_id, None
             _cam_cond.wait(timeout=min(remaining, 0.5))
-        return _cam_frame_id, _cam_jpeg
+        return _cam_frame_id, _cam_source_frame_id, _cam_jpeg
+
+
+def get_fusion_frames() -> list:
+    with _cam_cond:
+        return list(_cam_fusion_frames)
 
 
 def get_status() -> dict:
@@ -227,6 +272,9 @@ def get_status() -> dict:
             'port': _cam_bind_port,
             'recv_count': _cam_recv_count,
             'frame_id': _cam_frame_id,
+            'source_frame_id': _cam_source_frame_id,
+            'block_id': _cam_block_id,
+            'display_frame_id': _display_frame_id(_cam_source_frame_id, _cam_block_id),
             'age_ms': age_ms,
         }
 

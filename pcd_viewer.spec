@@ -29,6 +29,30 @@ _ws_d, _ws_b, _ws_h = collect_all('websockets')
 # itself reports success. Explicitly force-collect it.
 _np_b = collect_dynamic_libs('numpy')
 
+# Include the official Streaming API in Windows builds when available.
+_simone_b = []
+if sys.platform == 'win32':
+    _bundled_simone_dir = os.path.abspath(
+        os.path.join('runtime', 'simone', 'Win64')
+    )
+    _simone_dll = os.environ.get(
+        'SIMONE_STREAMING_DLL',
+        os.path.join(_bundled_simone_dir, 'SimOneStreamingAPI.dll'),
+    )
+    if os.path.isfile(_simone_dll):
+        _simone_dir = os.path.dirname(_simone_dll)
+        for _dll_name in (
+            'SimOneStreamingAPI.dll',
+            'avcodec-58.dll', 'avformat-58.dll', 'avutil-56.dll',
+            'swresample-3.dll', 'swscale-5.dll',
+        ):
+            _dependency = os.path.join(_simone_dir, _dll_name)
+            if os.path.isfile(_dependency):
+                _simone_b.append(
+                    (_dependency, os.path.join('runtime', 'simone', 'Win64'))
+                )
+
+
 # gi (PyGObject) not bundled — C extension cannot be reliably frozen
 _gi_d, _gi_b, _gi_h = [], [], []
 
@@ -41,7 +65,7 @@ EXCLUDES = [
     'IPython', 'jupyter', 'notebook', 'nbformat', 'nbconvert',
     'tornado', 'zmq', 'traitlets', 'jinja2',
     'PIL', 'Pillow',
-    'cv2', 'imageio',
+    'imageio',
     'sqlalchemy', 'psycopg2',
     'cryptography', 'OpenSSL',
     'wx',
@@ -64,13 +88,15 @@ if sys.platform == 'win32':
 a = Analysis(
     ['pcd_viewer.py'],
     pathex=['.'],
-    binaries=[] + _wv_b + _gi_b + _ws_b + _np_b,
+    binaries=[] + _wv_b + _gi_b + _ws_b + _np_b + _simone_b,
     datas=[
         (os.path.join('view', 'templates'), os.path.join('view', 'templates')),
         (os.path.join('view', 'static'),    os.path.join('view', 'static')),
     ] + _wv_d + _gi_d + _ws_d,
     hiddenimports=[
         'numpy',
+        'cv2',
+        'model.fusion_model',
         'tkinter',
         'tkinter.filedialog',
         # pythonnet/clr — pywebview WinForms backend (Windows)
