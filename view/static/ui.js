@@ -750,8 +750,8 @@ async function loadFile(path){
     document.getElementById('info').textContent=npoints.toLocaleString()+' pts'+(original_count!==npoints?' (↓'+original_count.toLocaleString()+')':'')+'  ·  '+(fname||path);setStatus('OK','ok');
   }catch(e){setStatus('fetch error','err');}
 }
-function updatePointSize(v){document.getElementById('pt-size-val').textContent=parseFloat(v).toFixed(1);window._three.setPointSize(parseFloat(v));window._three.setPickThreshold(parseFloat(v)*0.05);}
-function applyColorMode(v){window._three.setColorMode(v);}function resetCamera(){window._three.resetCamera();}
+function updatePointSize(v){document.getElementById('pt-size-val').textContent=parseFloat(v).toFixed(1);window._three.setPointSize(parseFloat(v));window._three.setPickThreshold(parseFloat(v)*0.05);if(_fusionMode){const r=Math.max(0,Math.min(8,Math.round(parseFloat(v))));fetch('/api/fusion_render_options?point_size='+r).catch(()=>{});}}
+function applyColorMode(v){window._three.setColorMode(v);if(_fusionMode){fetch('/api/fusion_render_options?color_mode='+encodeURIComponent(v)).catch(()=>{});}}function resetCamera(){window._three.resetCamera();}
 function applyGrid(){
   const show=document.getElementById('grid-show').checked;
   const size=Math.max(1,parseFloat(document.getElementById('grid-size').value)||200);
@@ -1202,11 +1202,22 @@ async function fusionStart(){
     });
     const started=await fetch('/api/fusion_ensure?'+q).then(r=>r.json());
     if(!started.ok)throw new Error(started.error||'receiver start failed');
+    _fusionSyncViewOptions();
     _fusionActive=true;_fusionLastSequence=-1;
     status.textContent='waiting for camera/LiDAR frames…';
     document.getElementById('fusion-start-btn').textContent='⏹ Stop Fusion';
     void _fusionPoll();
   }catch(e){status.textContent='error: '+e.message;setStatus('Fusion start failed','err');}
+}
+// Push the View panel's current Size/Color to the server so fused frames match
+// the same controls that drive PCD/3DGS rendering.
+function _fusionSyncViewOptions(){
+  const sz=document.getElementById('pt-size')?.value;
+  const cm=document.getElementById('color-mode')?.value;
+  const q=new URLSearchParams();
+  if(sz!=null)q.set('point_size',String(Math.max(0,Math.min(8,Math.round(parseFloat(sz))))));
+  if(cm)q.set('color_mode',cm);
+  if([...q.keys()].length)fetch('/api/fusion_render_options?'+q).catch(()=>{});
 }
 function fusionStop(){
   _fusionActive=false;

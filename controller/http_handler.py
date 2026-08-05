@@ -328,6 +328,18 @@ class Handler(BaseHTTPRequestHandler):
             from model.fusion_model import get_status as fusion_status
             self._json(fusion_status())
 
+        elif path == '/api/fusion_render_options':
+            try:
+                from model.fusion_model import set_render_options
+                ps = params.get('point_size', [None])[0]
+                cm = params.get('color_mode', [None])[0]
+                opts = set_render_options(
+                    point_size=int(ps) if ps is not None else None,
+                    color_mode=cm)
+                self._json({'ok': True, **opts})
+            except (ValueError, IndexError):
+                self._json({'ok': False})
+
         elif path == '/api/fusion_frame':
             try:
                 after = int(params.get('after', ['-1'])[0])

@@ -27,6 +27,24 @@ _worker = None
 # a full LiDAR period of slack before giving up on finding a usable match.
 _MAX_MATCH_DIFF_MS = 100
 
+# Live-adjustable projected-point rendering options (applied every frame).
+_render_opts = {'point_size': 1, 'color_mode': 'intensity'}
+
+
+def set_render_options(point_size=None, color_mode=None) -> dict:
+    with _lock:
+        if point_size is not None:
+            _render_opts['point_size'] = max(0, min(8, int(point_size)))
+        if color_mode in ('intensity', 'height', 'flat'):
+            _render_opts['color_mode'] = color_mode
+        return dict(_render_opts)
+
+
+def get_render_options() -> dict:
+    with _lock:
+        return dict(_render_opts)
+
+
 
 def _rotation_zyx(roll: float, pitch: float, yaw: float) -> np.ndarray:
     roll, pitch, yaw = np.deg2rad([roll, pitch, yaw])
@@ -123,7 +141,29 @@ def _colors(intensity: np.ndarray) -> np.ndarray:
     return np.stack([b, np.clip(g,0,255), np.clip(r,0,255)], axis=1).astype(np.uint8)
 
 
-def _render(camera: dict, lidar: dict, cfg: dict):
+def _color_points(source: np.ndarray, mode: str) -> np.ndarray:
+    """BGR colors per point for the requested color mode.
+
+    - intensity: jet colormap over the intensity channel (source[:,3])
+    - height:    jet colormap over auto-ranged world Z (source[:,2])
+    - flat:      single green for all points
+    """
+    n = len(source)
+    if n == 0:
+        return np.zeros((0, 3), np.uint8)
+    if mode == 'flat':
+        return np.tile(np.array([0, 255, 0], np.uint8), (n, 1))
+    if mode == 'height':
+        z = source[:, 2].astype(np.float32)
+        zmin, zmax = float(z.min()), float(z.max())
+        rng = zmax - zmin
+        norm = (z - zmin) / rng * 255.0 if rng > 1e-6 else np.zeros_like(z)
+        return _colors(norm)
+    inten = source[:, 3] if source.shape[1] > 3 else np.zeros(n)
+    return _colors(inten)
+
+
+def _render(camera: dict, lidar: dict, cfg: dict, opts: dict):
     image = cv2.imdecode(np.frombuffer(camera['jpeg'], np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError('camera JPEG decode failed')
@@ -138,14 +178,19 @@ def _render(camera: dict, lidar: dict, cfg: dict):
     valid = ((pixels[:,0]>=0)&(pixels[:,0]<image.shape[1])&
              (pixels[:,1]>=0)&(pixels[:,1]<image.shape[0]))
     pixels, source = pixels[valid], source[valid]
-    colors = _colors(source[:,3] if source.shape[1] > 3 else np.zeros(len(source)))
-    # Vectorized splat instead of one cv2.circle() Python call per point (was the
-    # dominant cost at 50k+ points/frame — 60-150x fewer Python/OpenCV calls).
+    colors = _color_points(source, opts.get('color_mode', 'intensity'))
+    # Vectorized square splat (radius from opts) instead of one cv2.circle() call
+    # per point — each dx/dy offset is a single fully-vectorized assignment.
     h, w = image.shape[:2]
     xs, ys = pixels[:, 0], pixels[:, 1]
-    image[ys, xs] = colors
-    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-        image[np.clip(ys + dy, 0, h - 1), np.clip(xs + dx, 0, w - 1)] = colors
+    radius = int(opts.get('point_size', 1))
+    if radius <= 0:
+        image[ys, xs] = colors
+    else:
+        for dy in range(-radius, radius + 1):
+            cy = np.clip(ys + dy, 0, h - 1)
+            for dx in range(-radius, radius + 1):
+                image[cy, np.clip(xs + dx, 0, w - 1)] = colors
     ok, encoded = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not ok:
         raise ValueError('fusion JPEG encode failed')
@@ -170,6 +215,7 @@ def _worker_loop():
             cameras, lidars = get_fusion_frames(), get_lidar_frames()
             with _lock:
                 cfg = copy.deepcopy(_config)
+                opts = dict(_render_opts)
             if not cfg or not cameras or not lidars:
                 time.sleep(.03); continue
             # Anchor on the newest completed LiDAR frame rather than the newest
@@ -207,7 +253,7 @@ def _worker_loop():
                 # moment, which would otherwise look like a bad/wrong calibration.
                 _last_lidar_fid = lidar_fid
                 time.sleep(.01); continue
-            jpeg, projected = _render(camera, lidar, cfg)
+            jpeg, projected = _render(camera, lidar, cfg, opts)
             with _cond:
                 _last_lidar_fid = lidar_fid; _sequence += 1; _jpeg = jpeg
                 _meta = {'camera_frame': _camera_key(camera), 'lidar_frame': lidar_fid,
