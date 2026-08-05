@@ -198,7 +198,7 @@
           </div>
         </details>
         <div class="fusion-endpoints">
-          <input id="fusion-lidar-ip" value="10.66.8.44" title="LiDAR IP">
+          <input id="fusion-lidar-ip" value="127.0.0.1" title="LiDAR IP">
           <input id="fusion-lidar-port" type="number" value="6699" title="LiDAR port">
           <input id="fusion-info-port" type="number" value="7788" title="DIFOP port">
           <input id="fusion-camera-port" type="number" value="13956" title="Camera port">
@@ -285,7 +285,7 @@
     <div class="sec">
       <div style="display:grid;grid-template-columns:auto 1fr auto 1fr;gap:5px;align-items:center">
         <span style="font-size:.7rem;color:#64748b">Bind IP</span>
-        <input type="text" id="cam-ip" value="10.66.8.44" placeholder="10.66.8.44" style="min-width:0;width:100%">
+        <input type="text" id="cam-ip" value="127.0.0.1" placeholder="127.0.0.1" style="min-width:0;width:100%">
         <span style="font-size:.7rem;color:#64748b">Port</span>
         <input type="number" id="cam-port" min="1" max="65535" step="1" value="13956" style="min-width:0;width:100%">
       </div>
@@ -297,7 +297,7 @@
         <input type="checkbox" id="cam-show-fps" checked onchange="camToggleFps(this.checked)" style="accent-color:#ec4899">
         Show FPS badge
       </label>
-      <div id="cam-bind-status" style="font-size:.62rem;color:#64748b;text-align:center;margin-top:2px">bind: 10.66.8.44:13956</div>
+      <div id="cam-bind-status" style="font-size:.62rem;color:#64748b;text-align:center;margin-top:2px">bind: 127.0.0.1:13956</div>
     </div>
   </details>
   <div style="flex:1;min-height:8px"></div>

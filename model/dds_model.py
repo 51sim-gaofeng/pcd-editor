@@ -31,12 +31,12 @@ _dds_last_ts: float = 0.0      # time of last received frame
 _dds_proc_ms_total: float = 0.0
 _dds_ds_ms_total: float = 0.0
 _dds_out_bytes_total: int = 0
-_dds_bind_host: str = '10.66.8.44'
+_dds_bind_host: str = '127.0.0.1'
 _dds_bind_port: int = 9870
 _dds_last_src_host: str = ''     # IP of the most recent UDP sender
 _dds_last_src_port: int = 0
 _dds_running: bool = False
-_dds_ws_bind_host: str = '10.66.8.44'
+_dds_ws_bind_host: str = '127.0.0.1'
 _dds_ws_bind_port: int = 9090
 _dds_ws_running: bool = False
 _dds_ws_client_count: int = 0
@@ -400,7 +400,7 @@ def stop_ws_server() -> None:
         _ws_server_thread = None
 
 
-def start_ws_server(port: int, host: str = '10.66.8.44') -> None:
+def start_ws_server(port: int, host: str = '127.0.0.1') -> None:
     global _ws_server_thread
     stop_ws_server()
     t = threading.Thread(target=_ws_server_thread_fn, args=(host, port), daemon=True)
@@ -437,7 +437,7 @@ def stop_udp_listener() -> None:
         _listener_sock = None
 
 
-def start_udp_listener(port: int, host: str = '10.66.8.44') -> None:
+def start_udp_listener(port: int, host: str = '127.0.0.1') -> None:
     """Start UDP listener; if already running, restart on new host/port."""
     global _listener_thread, _listener_stop_evt
     stop_udp_listener()

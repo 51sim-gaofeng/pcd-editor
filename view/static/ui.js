@@ -1090,7 +1090,7 @@ function switchMode(mode){
     const noSig=document.getElementById('cam-no-signal');if(noSig)noSig.style.display='';
     const btnC=document.getElementById('btn-cam-connect');if(btnC){btnC.innerHTML='&#128279; Connect';btnC.style.background='';}
     const stEl=document.getElementById('cam-status');if(stEl){stEl.textContent='off';stEl.style.color='';}
-    const bsEl=document.getElementById('cam-bind-status');if(bsEl)bsEl.textContent='bind: 10.66.8.44:'+(document.getElementById('cam-port')?.value||'9870');
+    const bsEl=document.getElementById('cam-bind-status');if(bsEl)bsEl.textContent='bind: 127.0.0.1:'+(document.getElementById('cam-port')?.value||'9870');
   }
   if(toGs){
     window._three?.clearCloud?.();
@@ -1194,7 +1194,7 @@ async function fusionStart(){
     });
     const configured=await configResponse.json();
     if(!configured.ok)throw new Error(configured.error||'configuration failed');
-    const ip=(document.getElementById('fusion-lidar-ip')?.value||'10.66.8.44').trim();
+    const ip=(document.getElementById('fusion-lidar-ip')?.value||'127.0.0.1').trim();
     const q=new URLSearchParams({
       lidar_ip:ip,lidar_port:document.getElementById('fusion-lidar-port')?.value||'6699',
       info_port:document.getElementById('fusion-info-port')?.value||'7788',
@@ -1228,6 +1228,8 @@ async function _fusionPoll(){
       const cameraFrame=r.headers.get('x-camera-frame')||'-1';
       const lidarFrame=r.headers.get('x-lidar-frame')||'-1';
       const projected=r.headers.get('x-projected-points')||'0';
+      const renderFps=r.headers.get('x-render-fps')||'-1';
+      const renderAvgMs=r.headers.get('x-render-avg-ms')||'-1';
       const buffer=await r.arrayBuffer();
       if(!buffer.byteLength)continue;
       _fusionLastSequence=seq;
@@ -1237,7 +1239,8 @@ async function _fusionPoll(){
       img.onload=()=>{if(previous)URL.revokeObjectURL(previous);img.style.display='block';document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','none');};
       img.src=next;
       const badge=document.getElementById('fusion-badge');
-      badge.style.display='block';badge.textContent='Camera '+cameraFrame+' · LiDAR '+lidarFrame+' · '+projected+' projected pts';
+      const perfLabel=renderFps!=='-1'?(' · render '+renderFps+' fps ('+renderAvgMs+'ms/frame)'):'';
+      badge.style.display='block';badge.textContent='Camera '+cameraFrame+' · LiDAR '+lidarFrame+' · '+projected+' projected pts'+perfLabel;
       document.getElementById('fusion-run-status').textContent='running · sequence '+seq;
     }catch(e){
       if(e.name==='AbortError'||!_fusionActive||!_fusionMode)break;
@@ -1273,11 +1276,11 @@ async function camConnect(){
     const noSig=document.getElementById('cam-no-signal');if(noSig)noSig.style.display='';
     const btnC=document.getElementById('btn-cam-connect');if(btnC){btnC.innerHTML='&#128279; Connect';btnC.style.background='';}
     const stEl=document.getElementById('cam-status');if(stEl){stEl.textContent='off';stEl.style.color='';}
-    document.getElementById('cam-bind-status').textContent='bind: 10.66.8.44:'+(document.getElementById('cam-port')?.value||'9870');
+    document.getElementById('cam-bind-status').textContent='bind: 127.0.0.1:'+(document.getElementById('cam-port')?.value||'9870');
     setStatus('Camera stopped','ok');
     return;
   }
-  const ip=(document.getElementById('cam-ip')?.value||'10.66.8.44').trim()||'10.66.8.44';
+  const ip=(document.getElementById('cam-ip')?.value||'127.0.0.1').trim()||'127.0.0.1';
   const port=parseInt(document.getElementById('cam-port')?.value||'13956',10);
   if(!(port>=1&&port<=65535)){setStatus('Camera port invalid','err');return;}
   try{

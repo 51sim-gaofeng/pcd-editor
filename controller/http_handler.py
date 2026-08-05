@@ -315,11 +315,11 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 from model.camera_model import start_udp_listener as cam_start
                 streaming_rebind_udp(
-                    params.get('lidar_ip', ['10.66.8.143'])[0],
+                    params.get('lidar_ip', ['127.0.0.1'])[0],
                     int(params.get('lidar_port', ['6699'])[0]),
                     int(params.get('info_port', ['7788'])[0]))
                 cam_start(port=int(params.get('camera_port', ['13956'])[0]),
-                          host=params.get('camera_ip', ['10.66.8.143'])[0])
+                          host=params.get('camera_ip', ['127.0.0.1'])[0])
                 self._json({'ok': True})
             except Exception as e:
                 self._json({'ok': False, 'error': str(e)})
@@ -345,6 +345,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header('X-Camera-Frame', str(meta.get('camera_frame', -1)))
                     self.send_header('X-Lidar-Frame', str(meta.get('lidar_frame', -1)))
                     self.send_header('X-Projected-Points', str(meta.get('projected_points', 0)))
+                    self.send_header('X-Match-Residual-Ms', str(meta.get('match_residual_ms', -1)))
+                    self.send_header('X-Render-Fps', str(meta.get('render_fps', -1)))
+                    self.send_header('X-Render-Avg-Ms', str(meta.get('render_avg_ms', -1)))
                     self.send_header('Cache-Control', 'no-store')
                     self.send_header('Content-Length', str(len(jpeg)))
                     self.end_headers()
@@ -736,7 +739,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_camera_ensure(self, params):
         try:
-            host = params.get('ip', ['10.66.8.143'])[0] or '10.66.8.143'
+            host = params.get('ip', ['127.0.0.1'])[0] or '127.0.0.1'
             port = int(params.get('port', ['9870'])[0])
             from model.camera_model import start_udp_listener as cam_start, get_status as cam_status
             cam_start(port=port, host=host)
@@ -746,7 +749,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_camera_rebind(self, params):
         try:
-            host = params.get('ip', ['10.66.8.143'])[0] or '10.66.8.143'
+            host = params.get('ip', ['127.0.0.1'])[0] or '127.0.0.1'
             port = int(params.get('port', ['9870'])[0])
             from model.camera_model import rebind as cam_rebind
             self._json({'ok': True, **cam_rebind(host, port)})
