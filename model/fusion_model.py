@@ -113,9 +113,12 @@ def configure(camera: dict, lidar: dict) -> dict:
         matrix = [[fx,0,cx],[0,fy,cy],[0,0,1]]
     distortion = intr.get('opencv_distortion_coefficients')
     if distortion is None:
+        # 8-param rational model (k1,k2,p1,p2,k3,k4,k5,k6); k4..k6 default 0,
+        # which reduces exactly to the 5-param model.
         distortion = [_value(intr,'k1','K1'), _value(intr,'k2','K2'),
                       _value(intr,'p1','P1'), _value(intr,'p2','P2'),
-                      _value(intr,'k3','K3')]
+                      _value(intr,'k3','K3'), _value(intr,'k4','K4'),
+                      _value(intr,'k5','K5'), _value(intr,'k6','K6')]
     camera_t, camera_r = _pose(camera)
     lidar_t, lidar_r = _pose(lidar)
     # display3d.py: vehicle/LiDAR X-forward,Y-left,Z-up -> camera optical
