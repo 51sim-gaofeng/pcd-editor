@@ -194,6 +194,20 @@ canvas{display:block;width:100%;height:100%}
 #calibration-wrap.active{display:flex}
 #calib-preview{display:none;width:100%;height:100%;object-fit:contain}
 #calib-preview-label{position:absolute;left:12px;top:12px;padding:5px 9px;border-radius:5px;background:#08101dcc;color:#67e8f9;font-size:.7rem}
+#calib-playbar{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:8px;background:#0b1220e6;border:1px solid #1e293b;z-index:6}
+.calib-pb-btn{background:#1e293b;border:1px solid #334155;color:#cbd5e1;font-size:.72rem;padding:4px 9px;border-radius:5px;cursor:pointer}
+.calib-pb-btn:hover{background:#334155}
+.calib-pb-btn:disabled{opacity:.4;cursor:not-allowed}
+.calib-pb-view.active{background:#0891b2;border-color:#0891b2;color:#fff}
+.calib-pb-idx{color:#94a3b8;font-size:.68rem;min-width:56px;text-align:center;font-variant-numeric:tabular-nums}
+.calib-pb-sep{width:1px;height:16px;background:#334155;margin:0 2px}
+#calib-progress{position:absolute;right:12px;top:12px;max-width:320px;max-height:70%;overflow:auto;padding:8px 10px;border-radius:6px;background:#0b1220e6;border:1px solid #1e293b;color:#cbd5e1;font-size:.64rem;line-height:1.5;z-index:6}
+#calib-progress .cp-stage{color:#67e8f9;font-weight:600;margin-bottom:4px}
+#calib-progress .cp-ok{color:#34d399}
+#calib-progress .cp-bad{color:#f87171}
+#calib-legend{position:absolute;right:12px;bottom:16px;padding:7px 11px;border-radius:6px;background:#0b1220e6;border:1px solid #1e293b;color:#cbd5e1;font-size:.66rem;line-height:1.9;z-index:6}
+#calib-legend .cl-cross{color:#ffd400;font-weight:700;display:inline-block;width:14px;text-align:center}
+#calib-legend .cl-circle{display:inline-block;width:11px;height:11px;border:2px solid #e40000;border-radius:50%;vertical-align:-1px;margin-right:3px}
 .calibration-form>label,.calibration-form .grid2>label,.calibration-form .grid3>label{display:flex;flex-direction:column;gap:3px;font-size:.67rem;color:#94a3b8}
 .calibration-form input,.calibration-form select{width:100%;min-width:0;background:#1e293b;color:#e0e0e0;border:1px solid #334155;border-radius:4px;padding:4px 6px;font-size:.72rem}
 .calib-path{font-size:.62rem;line-height:1.4;color:#64748b;overflow-wrap:anywhere}

@@ -1089,11 +1089,13 @@ function switchMode(mode){
   const secFusion=document.getElementById('sec-fusion');if(secFusion)secFusion.style.display=toFusion?'':'none';
   const secCalibration=document.getElementById('sec-calibration');if(secCalibration)secCalibration.style.display=toCalibration?'':'none';
   if(toFusion)_fusionRefreshJsonList(document.getElementById('fusion-json-select')?.value||'');
+  if(toCalibration)_calibRefreshRecentDirs(_calibImageDir);
   const secGs=document.getElementById('sec-gs');if(secGs)secGs.style.display=toGs?'':'none';
   const camWrap=document.getElementById('camera-wrap');if(camWrap)camWrap.classList.toggle('active',toCam);
   const fusionWrap=document.getElementById('fusion-wrap');if(fusionWrap)fusionWrap.classList.toggle('active',toFusion);
   const calibrationWrap=document.getElementById('calibration-wrap');if(calibrationWrap)calibrationWrap.classList.toggle('active',toCalibration);
   if(!toCalibration)calibCaptureStop(true);
+  if(!toCalibration)_calibStopPlay();
   ['cv','lasso-canvas'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion||toCalibration)?'none':'';});
   const axesLabel=document.getElementById('axes-label');if(axesLabel)axesLabel.style.display=(toCam||toFusion||toCalibration)?'none':'';
   const ovl=document.getElementById('overlay');if(ovl)ovl.style.display=(toCam||toFusion||toCalibration||toGs)?'none':'';
@@ -1120,6 +1122,8 @@ function switchMode(mode){
 }
 
 let _calibImageDir='',_calibImageDirSelected=false,_calibCaptureDir='',_calibCaptureTimer=null,_calibAutoStatusTimer=null;
+let _calibImages=[],_calibImgIdx=0,_calibPlayTimer=null,_calibProgTimer=null,_calibView='raw',_calibOverlays={},_calibResult=null;
+function _calibEsc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 async function calibPickFolder(purpose){
   const current=purpose==='capture'?_calibCaptureDir:_calibImageDir;
   const r=await fetch('/api/calibration_pick_dir?purpose='+purpose+'&dir='+encodeURIComponent(current||''));
@@ -1129,8 +1133,25 @@ async function calibPickFolder(purpose){
     document.getElementById('calib-capture-status').textContent='Save folder selected';
   }else{
     _calibImageDir=d.path;_calibImageDirSelected=true;document.getElementById('calib-image-dir').textContent=d.path;document.getElementById('calib-image-dir').style.display='';calibSetStatus('Image folder selected');
+    await _calibLoadImages();
+    _calibRefreshRecentDirs(_calibImageDir);
   }
   return true;
+}
+async function _calibRefreshRecentDirs(selected){
+  const sel=document.getElementById('calib-dir-select');if(!sel)return;
+  let dirs=[];try{dirs=(await (await fetch('/api/calibration_recent_dirs')).json()).dirs||[];}catch(_e){}
+  if(!dirs.length){sel.style.display='none';sel.innerHTML='';return;}
+  sel.style.display='';
+  sel.innerHTML='<option value="">Recent image folders\u2026</option>'+dirs.map(d=>'<option value="'+_calibEsc(d)+'">'+_calibEsc(d)+'</option>').join('');
+  if(selected&&dirs.indexOf(selected)>=0)sel.value=selected;
+}
+async function calibSelectRecentDir(path){
+  if(!path)return;
+  _calibImageDir=path;_calibImageDirSelected=true;
+  const lbl=document.getElementById('calib-image-dir');lbl.textContent=path;lbl.style.display='';
+  calibSetStatus('Image folder selected');
+  await _calibLoadImages();
 }
 function calibSetStatus(text,error=false){const el=document.getElementById('calib-status');if(el){el.textContent=text;el.classList.toggle('error',error);}}
 async function calibRun(){
@@ -1138,31 +1159,149 @@ async function calibRun(){
   if(!model){calibSetStatus('Select a camera model before calibration.',true);return;}
   if(!_calibImageDirSelected&&!await calibPickFolder('images'))return;
   const btn=document.getElementById('calib-run-btn');btn.disabled=true;btn.textContent='Detecting corners and calibrating…';calibSetStatus('Processing, please wait');
+  document.getElementById('calib-result').style.display='none';
+  document.getElementById('calib-export-row').style.display='none';
+  document.getElementById('calib-view-overlay').disabled=true;_calibOverlays={};
   const payload={folder:_calibImageDir,output_dir:_calibImageDir,model,
     rows:+document.getElementById('calib-rows').value,cols:+document.getElementById('calib-cols').value,
     square_mm:+document.getElementById('calib-square').value,min_images:+document.getElementById('calib-min-images').value};
   try{
     const d=await (await fetch('/api/calibration_run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json();
-    if(!d.ok)throw new Error(d.error||'Calibration failed');
-    const coeffNames=d.model.startsWith('fisheye')?['k1','k2','k3','k4']:['k1','k2','p1','p2','k3','k4','k5','k6'];
-    const coeff=d.distortion_coefficients.map((v,i)=>`${coeffNames[i]} = ${Number(v).toPrecision(10)}`).join('\n');
-    const fx=d.camera_matrix[0][0],fy=d.camera_matrix[1][1],cx=d.camera_matrix[0][2],cy=d.camera_matrix[1][2];
-    const offsetCx=cx-d.image_size[0]/2,offsetCy=cy-d.image_size[1]/2;
-    const warnings=(d.diagnostics?.warnings||[]).map(x=>'Warning: '+x).join('\n');
-    const metric=d.display_reprojection||{value_px:d.mean_reprojection_error,source:'estimated_pose',file:null};
-    const isReference=metric.source==='reference_pose';
-    const metricLabel=metric.label||(isReference?'Single-Image Reprojection RMS (Reference Pose)':'Single-Image Reprojection RMS (Estimated Extrinsics)');
-    const metricNote=metric.note||(isReference?'Uses the distance encoded in the filename and assumes the board is centered and perpendicular to the optical axis.':'No valid named preview image was found; uses the first valid image and its estimated extrinsics.');
-    const metricFile=metric.file?`\nValidation Image: ${metric.file}`:'';
-    const meanPixelError=Number(metric.mean_pixel_error_px);
-    const meanPixelLine=Number.isFinite(meanPixelError)?`\nMean Pixel Error: ${meanPixelError.toFixed(6)} px`:'';
-    const relativeDistanceError=Number(metric.distance_relative_error_percent);
-    const distanceLines=Number.isFinite(relativeDistanceError)?`\nRelative Distance Error: ${relativeDistanceError.toFixed(6)} %`:'';
-    const reprojectionMetrics=`${metricLabel}: ${Number(metric.value_px).toFixed(6)} px${meanPixelLine}${distanceLines}${metricFile}`;
-    const out=`Model: ${d.model}\nValid Images: ${d.valid_images.length} / ${d.valid_images.length+d.rejected_images.length}${warnings?'\n'+warnings:''}\n\nFocal Length Fx = ${fx.toFixed(6)}\nFocal Length Fy = ${fy.toFixed(6)}\nPrincipal Point cx (absolute pixel) = ${cx.toFixed(6)}\nPrincipal Point cy (absolute pixel) = ${cy.toFixed(6)}\nCenter Offset Cx = ${offsetCx.toFixed(6)}\nCenter Offset Cy = ${offsetCy.toFixed(6)}\n\nDistortion Coefficients D:\n${coeff}\n\n${reprojectionMetrics}\n\nNote: ${metricNote}\n\nReprojection Image: ${d.reprojection_file}\nResult: ${d.json_file}`;
-    const result=document.getElementById('calib-result');result.textContent=out;result.style.display='block';
-    calibSetStatus('Calibration complete. JSON, NPY, and preview files were saved to the image folder.');calibShowPreview(d.undistorted_url,'Undistortion Preview');
-  }catch(e){calibSetStatus(e.message,true);}finally{btn.disabled=false;btn.textContent='Start Offline Calibration';}
+    if(!d.ok)throw new Error(d.error||'Failed to start calibration');
+    _calibPollProgress();
+  }catch(e){calibSetStatus(e.message,true);btn.disabled=false;btn.textContent='Start Offline Calibration';}
+}
+const _CALIB_STAGE_NAMES={starting:'Starting',detecting:'Detecting corners',solving:'Solving parameters',reprojecting:'Computing reprojection error',rendering:'Rendering overlays',done:'Done',error:'Error'};
+function _calibRenderProgress(p){
+  const box=document.getElementById('calib-progress');if(!box)return;box.style.display='block';
+  const imgs=p.per_image||[];
+  const ok=imgs.filter(x=>x.status==='ok').length,bad=imgs.length-ok;
+  let head;
+  if(p.stage==='done'&&p.result){
+    const v=p.result.valid_images.length,tot=v+(p.result.rejected_images||[]).length;
+    head='Done · used '+v+' / '+tot+' images';
+  }else head=(_CALIB_STAGE_NAMES[p.stage]||p.stage)+(p.total?' · '+p.index+'/'+p.total:'');
+  let html='<div class="cp-stage">'+_calibEsc(head)+'</div>';
+  if(imgs.length)html+='<div>detected '+imgs.length+' · <span class="cp-ok">'+ok+' \u2713</span> · <span class="cp-bad">'+bad+' \u2717</span></div>';
+  else if(p.message)html+='<div>'+_calibEsc(p.message)+'</div>';
+  html+=imgs.slice(-60).map(it=>'<div class="'+(it.status==='ok'?'cp-ok':'cp-bad')+'">'+(it.status==='ok'?'\u2713':'\u2717')+' '+_calibEsc(it.file)+(it.status==='ok'?' · '+it.corners+' pts':' · '+_calibEsc(it.reason||'rejected'))+'</div>').join('');
+  // Corners were detected but the solver dropped the view (degenerate pose /
+  // reprojection outlier). Surface why, so "detected N but used M" is clear.
+  if(p.stage==='done'&&p.result){
+    const valid=new Set(p.result.valid_images||[]);
+    const dropped=imgs.filter(x=>x.status==='ok'&&!valid.has(x.file));
+    if(dropped.length){
+      const rej={};(p.result.rejected_images||[]).forEach(r=>{rej[r.file]=r.reason;});
+      html+='<div class="cp-stage" style="margin-top:6px">Dropped during solve · '+dropped.length+'</div>';
+      html+=dropped.map(x=>'<div class="cp-bad">\u2298 '+_calibEsc(x.file)+' · '+_calibEsc(rej[x.file]||'degenerate / outlier view')+'</div>').join('');
+    }
+  }
+  box.innerHTML=html;
+}
+function _calibPollProgress(){
+  clearInterval(_calibProgTimer);
+  _calibProgTimer=setInterval(async()=>{
+    let p;try{p=await (await fetch('/api/calibration_progress')).json();}catch(_e){return;}
+    _calibRenderProgress(p);
+    // Live: follow the frame currently being detected so the process is visible.
+    if(p.stage==='detecting'&&p.current_file&&_calibView==='raw'){const idx=_calibImages.indexOf(p.current_file);if(idx>=0){_calibImgIdx=idx;_calibShowFrame();}}
+    if(p.done){
+      clearInterval(_calibProgTimer);_calibProgTimer=null;
+      const btn=document.getElementById('calib-run-btn');btn.disabled=false;btn.textContent='Start Offline Calibration';
+      if(p.error)calibSetStatus(p.error,true);
+      else if(p.result)_calibRenderResult(p.result);
+    }
+  },250);
+}
+function _calibRenderResult(d){
+  _calibResult=d;
+  const coeffNames=d.model.startsWith('fisheye')?['k1','k2','k3','k4']:['k1','k2','p1','p2','k3','k4','k5','k6'];
+  const coeff=d.distortion_coefficients.map((v,i)=>`${coeffNames[i]} = ${Number(v).toPrecision(10)}`).join('\n');
+  const fx=d.camera_matrix[0][0],fy=d.camera_matrix[1][1],cx=d.camera_matrix[0][2],cy=d.camera_matrix[1][2];
+  const offsetCx=cx-d.image_size[0]/2,offsetCy=cy-d.image_size[1]/2;
+  const warnings=(d.diagnostics?.warnings||[]).map(x=>'Warning: '+x).join('\n');
+  const metric=d.display_reprojection||{value_px:d.mean_reprojection_error,source:'estimated_pose',file:null};
+  const isReference=metric.source==='reference_pose';
+  const metricLabel=metric.label||(isReference?'Single-Image Reprojection RMS (Reference Pose)':'Single-Image Reprojection RMS (Estimated Extrinsics)');
+  const metricNote=metric.note||(isReference?'Uses the distance encoded in the filename and assumes the board is centered and perpendicular to the optical axis.':'No valid named preview image was found; uses the first valid image and its estimated extrinsics.');
+  const metricFile=metric.file?`\nValidation Image: ${metric.file}`:'';
+  const meanPixelError=Number(metric.mean_pixel_error_px);
+  const meanPixelLine=Number.isFinite(meanPixelError)?`\nMean Pixel Error: ${meanPixelError.toFixed(6)} px`:'';
+  const relativeDistanceError=Number(metric.distance_relative_error_percent);
+  const distanceLines=Number.isFinite(relativeDistanceError)?`\nRelative Distance Error: ${relativeDistanceError.toFixed(6)} %`:'';
+  const reprojectionMetrics=`${metricLabel}: ${Number(metric.value_px).toFixed(6)} px${meanPixelLine}${distanceLines}${metricFile}`;
+  const out=`Model: ${d.model}\nValid Images: ${d.valid_images.length} / ${d.valid_images.length+d.rejected_images.length}${warnings?'\n'+warnings:''}\n\nFocal Length Fx = ${fx.toFixed(6)}\nFocal Length Fy = ${fy.toFixed(6)}\nPrincipal Point cx (absolute pixel) = ${cx.toFixed(6)}\nPrincipal Point cy (absolute pixel) = ${cy.toFixed(6)}\nCenter Offset Cx = ${offsetCx.toFixed(6)}\nCenter Offset Cy = ${offsetCy.toFixed(6)}\n\nDistortion Coefficients D:\n${coeff}\n\n${reprojectionMetrics}\n\nNote: ${metricNote}\n\nReprojection Image: ${d.reprojection_file}\nResult: ${d.json_file}`;
+  const result=document.getElementById('calib-result');result.textContent=out;result.style.display='block';
+  document.getElementById('calib-export-row').style.display='';
+  calibSetStatus('Calibration complete. JSON, NPY, and preview files were saved to the image folder.');
+  // Feature 3: per-image corner + reprojection overlays available for playback.
+  _calibOverlays={};(d.per_image_overlays||[]).forEach(it=>{if(it.overlay_url)_calibOverlays[it.file]=it;});
+  const hasOv=Object.keys(_calibOverlays).length>0;
+  document.getElementById('calib-view-overlay').disabled=!hasOv;
+  if(hasOv)calibSetView('overlay');else calibShowPreview(d.undistorted_url,'Undistortion Preview');
+}
+async function _calibLoadImages(){
+  try{const d=await (await fetch('/api/calibration_images?dir='+encodeURIComponent(_calibImageDir))).json();_calibImages=d.images||[];}
+  catch(_e){_calibImages=[];}
+  _calibImgIdx=0;_calibStopPlay();
+  const bar=document.getElementById('calib-playbar');
+  if(_calibImages.length){bar.style.display='flex';_calibView='raw';calibSetView('raw');}
+  else{bar.style.display='none';}
+}
+function _calibShowFrame(){
+  if(!_calibImages.length)return;
+  _calibImgIdx=(_calibImgIdx%_calibImages.length+_calibImages.length)%_calibImages.length;
+  const name=_calibImages[_calibImgIdx];
+  const img=document.getElementById('calib-preview'),empty=document.getElementById('calib-empty');
+  let url,label=name+'  ·  '+(_calibImgIdx+1)+' / '+_calibImages.length;
+  const ov=_calibView==='overlay'?_calibOverlays[name]:null;
+  if(ov){url=ov.overlay_url;label+='  ·  reproj err '+Number(ov.error).toFixed(3)+' px';}
+  else{url='/api/calibration_preview?file='+encodeURIComponent(name)+'&dir='+encodeURIComponent(_calibImageDir);if(_calibView==='overlay')label+='  ·  (no corners detected)';}
+  img.src=url+(url.includes('?')?'&':'?')+'_t='+Date.now();img.style.display='block';empty.style.display='none';
+  document.getElementById('calib-preview-label').textContent=label;
+  document.getElementById('calib-frame-idx').textContent=(_calibImgIdx+1)+' / '+_calibImages.length;
+}
+function calibFrameStep(delta){_calibStopPlay();_calibImgIdx+=delta;_calibShowFrame();}
+function _calibStopPlay(){if(_calibPlayTimer){clearInterval(_calibPlayTimer);_calibPlayTimer=null;}const b=document.getElementById('calib-play-btn');if(b)b.innerHTML='\u25B6';}
+function calibPlayToggle(){
+  if(_calibPlayTimer){_calibStopPlay();return;}
+  if(!_calibImages.length)return;
+  document.getElementById('calib-play-btn').innerHTML='\u23F8';
+  _calibPlayTimer=setInterval(()=>{_calibImgIdx++;_calibShowFrame();},500);
+}
+function calibSetView(v){
+  _calibView=v;
+  document.getElementById('calib-view-raw').classList.toggle('active',v==='raw');
+  document.getElementById('calib-view-overlay').classList.toggle('active',v==='overlay');
+  const lg=document.getElementById('calib-legend');if(lg)lg.style.display=(v==='overlay')?'block':'none';
+  _calibShowFrame();
+}
+function _calibExportPayload(){
+  const d=_calibResult;if(!d)return null;
+  // Standard OpenCV calibration format; derived fields (focal/principal, named
+  // distortion) are omitted since they duplicate camera_matrix / coefficients.
+  return {
+    model:d.model,
+    image_size:d.image_size,
+    camera_matrix:d.camera_matrix,
+    distortion_coefficients:d.distortion_coefficients,
+    rms:d.rms};
+}
+async function calibExportJson(){
+  const p=_calibExportPayload();if(!p){calibSetStatus('Run calibration first',true);return;}
+  // Native Save-As dialog server-side; the embedded window can't do <a download>.
+  try{
+    const r=await (await fetch('/api/calibration_export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dir:_calibImageDir,model:p.model,payload:p})})).json();
+    if(r.cancelled){calibSetStatus('Export cancelled');return;}
+    if(!r.ok)throw new Error(r.error||'Export failed');
+    calibSetStatus('Saved: '+r.path);
+  }catch(e){calibSetStatus(e.message,true);}
+}
+async function calibCopyParams(){
+  const p=_calibExportPayload();if(!p){calibSetStatus('Run calibration first',true);return;}
+  const text=JSON.stringify(p,null,2);
+  try{await navigator.clipboard.writeText(text);calibSetStatus('Parameters copied to clipboard');}
+  catch(_e){calibSetStatus('Copy blocked by browser; use Download JSON instead',true);}
 }
 function calibShowPreview(url,label){
   const img=document.getElementById('calib-preview'),empty=document.getElementById('calib-empty');

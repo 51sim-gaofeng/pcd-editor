@@ -218,6 +218,7 @@
       <div class="sec calibration-form">
         <div class="grp">
           <button class="btn ghost full-w" onclick="calibPickFolder('images')">&#128194; Select Image Folder…</button>
+          <select id="calib-dir-select" onchange="calibSelectRecentDir(this.value)" style="display:none"></select>
           <div id="calib-image-dir" class="calib-path" style="display:none"></div>
         </div>
         <label>Target Type<select id="calib-target"><option value="checkerboard">Checkerboard</option></select></label>
@@ -231,6 +232,10 @@
         <button class="btn full-w" id="calib-run-btn" onclick="calibRun()">Start Offline Calibration</button>
         <div id="calib-status" class="calib-status">Waiting for an image folder</div>
         <pre id="calib-result" class="calib-result" style="display:none"></pre>
+        <div id="calib-export-row" class="grid2" style="display:none">
+          <button class="btn" onclick="calibCopyParams()">Copy Params</button>
+          <button class="btn ghost" onclick="calibExportJson()">Download JSON</button>
+        </div>
       </div>
     </details>
     <details>
@@ -507,6 +512,20 @@
       <div id="calib-empty" class="fusion-empty"><span style="font-size:2.5rem">&#127919;</span><span>Select checkerboard images from multiple viewpoints or use local camera capture</span></div>
       <img id="calib-preview" alt="Calibration preview">
       <div id="calib-preview-label"></div>
+      <div id="calib-playbar" style="display:none">
+        <button class="calib-pb-btn" onclick="calibFrameStep(-1)" title="Previous frame">&#9664;&#9664;</button>
+        <button class="calib-pb-btn" id="calib-play-btn" onclick="calibPlayToggle()" title="Play / Pause">&#9654;</button>
+        <button class="calib-pb-btn" onclick="calibFrameStep(1)" title="Next frame">&#9654;&#9654;</button>
+        <span id="calib-frame-idx" class="calib-pb-idx">0 / 0</span>
+        <span class="calib-pb-sep"></span>
+        <button class="calib-pb-btn calib-pb-view active" id="calib-view-raw" onclick="calibSetView('raw')">Raw</button>
+        <button class="calib-pb-btn calib-pb-view" id="calib-view-overlay" onclick="calibSetView('overlay')" disabled>Corners + Reproj</button>
+      </div>
+      <div id="calib-progress" style="display:none"></div>
+      <div id="calib-legend" style="display:none">
+        <div><span class="cl-cross">&#10005;</span> Detected corner</div>
+        <div><span class="cl-circle"></span> Reprojected point</div>
+      </div>
     </div>
   <div id="overlay" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;pointer-events:none">
     <span style="font-size:2.5rem">&#9729;</span>

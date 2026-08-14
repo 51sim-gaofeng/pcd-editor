@@ -222,6 +222,21 @@ class Handler(BaseHTTPRequestHandler):
             from model.calibration_model import capture_status
             self._json(capture_status())
 
+        elif path == '/api/calibration_progress':
+            from model.calibration_model import get_calibration_progress
+            self._json(get_calibration_progress())
+
+        elif path == '/api/calibration_images':
+            try:
+                from model.calibration_model import list_input_images
+                self._json({'ok': True, 'images': list_input_images(params.get('dir', [''])[0])})
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e), 'images': []})
+
+        elif path == '/api/calibration_recent_dirs':
+            from config import list_calib_image_dirs
+            self._json({'dirs': list_calib_image_dirs()})
+
         elif path == '/api/set_dir':
             self._handle_set_dir(params)
 
@@ -448,11 +463,11 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == '/api/calibration_run':
             try:
                 data = json.loads(body or b'{}')
-                from model.calibration_model import calibrate
-                self._json({'ok': True, **calibrate(
+                from model.calibration_model import start_calibration
+                self._json(start_calibration(
                     data.get('folder', ''), data.get('rows', 0), data.get('cols', 0),
                     data.get('square_mm', 0), data.get('model', 'normal5'),
-                    data.get('min_images', 5), data.get('output_dir') or data.get('folder', ''))})
+                    data.get('min_images', 5), data.get('output_dir') or data.get('folder', '')))
             except Exception as e:
                 self._json({'ok': False, 'error': str(e)})
         elif parsed.path == '/api/calibration_capture_start':
@@ -483,6 +498,32 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == '/api/calibration_capture_stop':
             from model.calibration_model import stop_capture
             self._json({'ok': True, **stop_capture()})
+        elif parsed.path == '/api/calibration_export':
+            try:
+                data = json.loads(body or b'{}')
+                import tkinter as tk
+                from tkinter import filedialog
+                from config import config as _cfg
+                model = str(data.get('model', 'camera')).replace(os.sep, '_')
+                init_dir = data.get('dir', '') or _cfg.data_dir
+                stamp = __import__('datetime').datetime.now().strftime('%Y%m%d_%H%M%S')
+                root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)
+                save_path = filedialog.asksaveasfilename(
+                    title='Export Camera Intrinsics (K) and Distortion (D)',
+                    initialdir=init_dir,
+                    initialfile='camera_KD_' + model + '_' + stamp + '.json',
+                    defaultextension='.json',
+                    filetypes=[('JSON files', '*.json'), ('All files', '*.*')])
+                root.destroy()
+                if not save_path:
+                    self._json({'ok': False, 'cancelled': True})
+                else:
+                    save_path = os.path.normpath(save_path)
+                    with open(save_path, 'w', encoding='utf-8') as f:
+                        json.dump(data.get('payload') or {}, f, ensure_ascii=False, indent=2)
+                    self._json({'ok': True, 'path': save_path})
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
         else:
             self.send_error(404)
 
@@ -832,7 +873,11 @@ class Handler(BaseHTTPRequestHandler):
             }
             picked = filedialog.askdirectory(**dialog_options)
             root.destroy()
-            self._json({'path': os.path.normpath(picked) if picked else ''})
+            picked = os.path.normpath(picked) if picked else ''
+            if picked and purpose != 'capture':
+                from config import add_calib_image_dir
+                add_calib_image_dir(picked)
+            self._json({'path': picked})
         except Exception as e:
             self._json({'path': '', 'error': str(e)})
 
@@ -842,8 +887,11 @@ class Handler(BaseHTTPRequestHandler):
         full = os.path.realpath(os.path.join(folder, filename))
         if not filename or not full.startswith(folder + os.sep) or not os.path.isfile(full):
             self.send_error(404); return
+        ext = os.path.splitext(filename)[1].lower()
+        ctype = {'.png': 'image/png', '.bmp': 'image/bmp',
+                 '.tif': 'image/tiff', '.tiff': 'image/tiff'}.get(ext, 'image/jpeg')
         with open(full, 'rb') as f:
-            self._binary(f.read(), 'image/jpeg')
+            self._binary(f.read(), ctype)
 
     def _handle_set_dir(self, params):
         from config import config

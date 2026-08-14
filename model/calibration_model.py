@@ -25,6 +25,75 @@ _auto_capture_saved = 0
 _AUTO_CAPTURE_QUEUE_SIZE = 32
 _auto_capture_queue: queue.Queue = queue.Queue(maxsize=_AUTO_CAPTURE_QUEUE_SIZE)
 
+# ── Live calibration progress (background solve + polling) ───────────────────
+_calib_progress = {
+    'active': False, 'stage': 'idle', 'index': 0, 'total': 0,
+    'current_file': '', 'per_image': [], 'message': '',
+    'done': False, 'error': '', 'result': None,
+}
+_calib_progress_lock = threading.Lock()
+_calib_thread: 'threading.Thread | None' = None
+
+
+def _progress_update(**kw) -> None:
+    with _calib_progress_lock:
+        _calib_progress.update(kw)
+
+
+def _progress_add_image(entry: dict) -> None:
+    with _calib_progress_lock:
+        _calib_progress['per_image'].append(entry)
+
+
+def get_calibration_progress() -> dict:
+    with _calib_progress_lock:
+        snapshot = dict(_calib_progress)
+        snapshot['per_image'] = list(_calib_progress['per_image'])
+        return snapshot
+
+
+def list_input_images(folder: str) -> list[str]:
+    """Basenames of the checkerboard input images in a folder (no solve outputs)."""
+    return [os.path.basename(p) for p in list_images(folder)]
+
+
+def start_calibration(folder: str, rows: int, cols: int, square_mm: float,
+                      model: str = 'normal5', min_images: int = 5,
+                      output_dir: str | None = None) -> dict:
+    """Kick off the calibration solve in a background thread; poll progress."""
+    global _calib_thread
+    with _calib_progress_lock:
+        if _calib_progress['active']:
+            return {'ok': False, 'error': 'A calibration is already running'}
+        _calib_progress.update({
+            'active': True, 'stage': 'starting', 'index': 0, 'total': 0,
+            'current_file': '', 'per_image': [], 'message': 'Starting…',
+            'done': False, 'error': '', 'result': None})
+    _calib_thread = threading.Thread(
+        target=_calibration_worker, name='calib-solve', daemon=True,
+        args=(folder, rows, cols, square_mm, model, min_images, output_dir))
+    _calib_thread.start()
+    return {'ok': True, 'started': True}
+
+
+def _calibration_worker(folder, rows, cols, square_mm, model,
+                        min_images, output_dir) -> None:
+    def _on_progress(kw: dict) -> None:
+        image = kw.pop('image', None)
+        if kw:
+            _progress_update(**kw)
+        if image is not None:
+            _progress_add_image(image)
+    try:
+        result = calibrate(folder, rows, cols, square_mm, model, min_images,
+                           output_dir, on_progress=_on_progress)
+        _progress_update(stage='done', done=True, active=False,
+                         message='Calibration complete', result=result)
+    except Exception as exc:  # surfaced to the UI via the progress endpoint
+        _progress_update(stage='error', done=True, active=False,
+                         message=str(exc), error=str(exc))
+
+
 _PREVIEW_IMAGE_RE = re.compile(
     r'^calibration_preview_d(?P<distance_mm>\d+(?:\.\d+)?)mm'
     r'\.(?:jpe?g|png|bmp|tiff?)$', re.IGNORECASE)
@@ -51,24 +120,52 @@ def _preview_image_info(valid_files: list[str]) -> tuple[int, float | None]:
 
 
 def _find_corners(image, pattern):
+    """Cascade of image enhancements x detectors; return the first hit.
+
+    A single SB pass rejects many usable frames (low contrast, uneven lighting,
+    noise, strong perspective). We retry across CLAHE/denoised variants and both
+    the sector-based and classic detectors before declaring a frame unusable.
+    """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    # The classic detector can return false positives on checkerboards heavily
-    # warped near a fisheye image boundary. Prefer the sector-based detector;
-    # EXHAUSTIVE is slower but calibration is offline and reliability matters.
-    if hasattr(cv2, 'findChessboardCornersSB'):
-        ok, corners = cv2.findChessboardCornersSB(
-            gray, pattern,
-            cv2.CALIB_CB_NORMALIZE_IMAGE | cv2.CALIB_CB_EXHAUSTIVE)
-    else:
-        flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
-        ok, corners = cv2.findChessboardCorners(gray, pattern, flags)
-    # SB already returns sub-pixel coordinates. cornerSubPix remains useful
-    # only for the legacy fallback detector.
-    if ok and not hasattr(cv2, 'findChessboardCornersSB'):
-        corners = cv2.cornerSubPix(
-            gray, np.asarray(corners, np.float32), (5, 5), (-1, -1),
-            (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, .001))
-    return ok, corners
+    variants = [gray]
+    try:
+        variants.append(cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray))
+    except cv2.error:
+        pass
+    variants.append(cv2.GaussianBlur(gray, (3, 3), 0))
+
+    has_sb = hasattr(cv2, 'findChessboardCornersSB')
+    normalize = cv2.CALIB_CB_NORMALIZE_IMAGE
+    accuracy = getattr(cv2, 'CALIB_CB_ACCURACY', 0)
+    exhaustive = getattr(cv2, 'CALIB_CB_EXHAUSTIVE', 0)
+    sb_flag_sets = [normalize | exhaustive | accuracy,
+                    normalize | exhaustive,
+                    normalize]
+    classic_flag_sets = [
+        cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE,
+        cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE | cv2.CALIB_CB_FILTER_QUADS,
+        cv2.CALIB_CB_ADAPTIVE_THRESH,
+    ]
+    subpix_crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, .001)
+    for g in variants:
+        if has_sb:
+            for flags in sb_flag_sets:
+                try:
+                    ok, corners = cv2.findChessboardCornersSB(g, pattern, flags)
+                except cv2.error:
+                    ok = False
+                if ok:
+                    return True, corners  # SB already returns sub-pixel corners
+        for flags in classic_flag_sets:
+            try:
+                ok, corners = cv2.findChessboardCorners(g, pattern, flags)
+            except cv2.error:
+                ok = False
+            if ok:
+                corners = cv2.cornerSubPix(
+                    g, np.asarray(corners, np.float32), (5, 5), (-1, -1), subpix_crit)
+                return True, corners
+    return False, None
 
 
 def _fisheye_fit(obj_points, img_points, image_size, initial_k, flags,
@@ -158,7 +255,10 @@ def _record_rejection(rejected: list, filename: str, reason: str) -> None:
 
 def calibrate(folder: str, rows: int, cols: int, square_mm: float,
               model: str = 'normal5', min_images: int = 5,
-              output_dir: str | None = None) -> dict:
+              output_dir: str | None = None, on_progress=None) -> dict:
+    def _p(**kw):
+        if on_progress:
+            on_progress(kw)
     rows, cols = int(rows), int(cols)
     square_mm = float(square_mm)
     if rows < 3 or cols < 3 or square_mm <= 0:
@@ -174,23 +274,32 @@ def calibrate(folder: str, rows: int, cols: int, square_mm: float,
     obj[:, 0, :2] = np.mgrid[0:corner_cols, 0:corner_rows].T.reshape(-1, 2) * square_mm
     obj_points, img_points, valid_files, rejected = [], [], [], []
     image_size = None
+    _p(stage='detecting', total=len(files), index=0,
+       message='Detecting checkerboard corners')
     for filename in files:
+        base = os.path.basename(filename)
+        _p(index=len(valid_files) + len(rejected) + 1, current_file=base)
         image = cv2.imread(filename, cv2.IMREAD_COLOR)
         if image is None:
             _record_rejection(rejected, filename, 'Unreadable image')
+            _p(image={'file': base, 'status': 'failed', 'reason': 'Unreadable image'})
             continue
         size = image.shape[1], image.shape[0]
         if image_size is not None and size != image_size:
             _record_rejection(rejected, filename, 'Image size mismatch')
+            _p(image={'file': base, 'status': 'failed', 'reason': 'Image size mismatch'})
             continue
         ok, corners = _find_corners(image, pattern)
         if not ok:
             _record_rejection(rejected, filename, 'Complete checkerboard not detected')
+            _p(image={'file': base, 'status': 'failed', 'reason': 'No complete checkerboard'})
             continue
         image_size = size
         obj_points.append(obj.copy())
         img_points.append(corners.reshape(-1, 1, 2).astype(np.float32))
         valid_files.append(filename)
+        _p(image={'file': base, 'status': 'ok',
+                  'corners': int(corners.reshape(-1, 2).shape[0])})
     if len(valid_files) < int(min_images):
         raise ValueError(
             f'{len(files)} images were read, but only {len(valid_files)} contained a complete checkerboard; '
@@ -199,6 +308,9 @@ def calibrate(folder: str, rows: int, cols: int, square_mm: float,
 
     fisheye = model == 'fisheye'
     diagnostics = {'warnings': []}
+    _p(stage='solving', index=0, total=0,
+       message=('Solving fisheye intrinsics and distortion' if fisheye
+                else 'Solving intrinsics and distortion'))
     if fisheye:
         edge_views, duplicate_views = _analyze_fisheye_views(img_points, image_size)
         diagnostics['edge_view_count'] = edge_views
@@ -320,7 +432,11 @@ def calibrate(folder: str, rows: int, cols: int, square_mm: float,
     max_errors = []
     total_squared_error = 0.0
     total_points = 0
+    per_image_projected = []
+    _p(stage='reprojecting', index=0, total=len(img_points),
+       message='Computing reprojection errors')
     for i, points in enumerate(img_points):
+        _p(index=i + 1, current_file=os.path.basename(valid_files[i]))
         if fisheye:
             projected, _ = cv2.fisheye.projectPoints(
                 np.asarray(obj_points[i], np.float64).reshape(1, -1, 3),
@@ -329,6 +445,7 @@ def calibrate(folder: str, rows: int, cols: int, square_mm: float,
             projected, _ = cv2.projectPoints(obj_points[i], rvecs[i], tvecs[i], k, d)
         p0 = np.asarray(points, np.float64).reshape(-1, 1, 2)
         p1 = np.asarray(projected, np.float64).reshape(-1, 1, 2)
+        per_image_projected.append(p1.reshape(-1, 2))
         distances = np.linalg.norm((p0 - p1).reshape(-1, 2), axis=1)
         squared = float(np.sum(distances ** 2))
         errors.append(float(np.sqrt(squared / len(distances))))
@@ -543,6 +660,37 @@ def calibrate(folder: str, rows: int, cols: int, square_mm: float,
             new_k, _ = cv2.getOptimalNewCameraMatrix(k, d, image_size, .2, image_size)
             undist = cv2.undistort(src, k, d, None, new_k)
         cv2.imwrite(os.path.join(out, stem + '_undistorted.jpg'), undist)
+    # Per-image corner + reprojection overlays for frame-by-frame review.
+    per_image_overlays = []
+    ov_radius = max(3, int(round(min(image_size) * 0.004)))
+    ov_cross = max(11, int(round(min(image_size) * 0.014)))
+    ov_line = max(1, int(round(min(image_size) * 0.0016)))
+    _p(stage='rendering', index=0, total=len(valid_files),
+       message='Rendering per-image overlays')
+    for i, filename in enumerate(valid_files):
+        base = os.path.basename(filename)
+        _p(index=i + 1, current_file=base)
+        img = cv2.imread(filename)
+        entry = {'file': base, 'error': errors[i], 'max_error': max_errors[i]}
+        if img is not None:
+            detected = np.asarray(img_points[i], np.float64).reshape(-1, 2)
+            for x, y in detected:
+                if np.isfinite(x) and np.isfinite(y):
+                    cx, cy = int(round(x)), int(round(y))
+                    cv2.drawMarker(img, (cx, cy), (0, 0, 0),
+                                   cv2.MARKER_TILTED_CROSS, ov_cross, ov_line + 2, cv2.LINE_AA)
+                    cv2.drawMarker(img, (cx, cy), (0, 255, 255),
+                                   cv2.MARKER_TILTED_CROSS, ov_cross, ov_line, cv2.LINE_AA)
+            for x, y in per_image_projected[i]:
+                if np.isfinite(x) and np.isfinite(y):
+                    cv2.circle(img, (int(round(x)), int(round(y))),
+                               ov_radius, (0, 0, 230), 2, cv2.LINE_AA)
+            name = f'{stem}_ov_{i:03d}.jpg'
+            cv2.imwrite(os.path.join(out, name), img)
+            entry['overlay'] = name
+            entry['overlay_url'] = '/api/calibration_preview?file=' + name + '&dir=' + out
+        per_image_overlays.append(entry)
+    result['per_image_overlays'] = per_image_overlays
     result['output_dir'] = out
     result['json_file'] = json_path
     result['preview_url'] = '/api/calibration_preview?file=' + stem + '_corners.jpg&dir=' + out
