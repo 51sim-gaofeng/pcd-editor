@@ -4,7 +4,6 @@ from __future__ import annotations
 import copy
 import threading
 import time
-from collections import deque
 
 import cv2
 import numpy as np
@@ -28,17 +27,28 @@ _worker = None
 # a full LiDAR period of slack before giving up on finding a usable match.
 _MAX_MATCH_DIFF_MS = 100
 
-# Rolling perf counters for the render loop itself — lets you tell whether the
-# fusion pipeline is keeping up with incoming sensor data (see get_status()'s
-# render_fps/render_avg_ms/render_max_ms) independent of whatever the raw
-# camera/LiDAR receive rates are (those are reported by camera_model/
-# streaming_model's own get_status()).
-_render_times_ms = deque(maxlen=60)
-_render_fps_window = deque(maxlen=60)  # wall-clock timestamps of completed renders
+# Live-adjustable projected-point rendering options (applied every frame).
+_render_opts = {'point_size': 1, 'color_mode': 'intensity'}
+
+
+def set_render_options(point_size=None, color_mode=None) -> dict:
+    with _lock:
+        if point_size is not None:
+            _render_opts['point_size'] = max(0, min(8, int(point_size)))
+        if color_mode in ('intensity', 'height', 'flat'):
+            _render_opts['color_mode'] = color_mode
+        return dict(_render_opts)
+
+
+def get_render_options() -> dict:
+    with _lock:
+        return dict(_render_opts)
+
 
 
 def _rotation_zyx(roll: float, pitch: float, yaw: float) -> np.ndarray:
-    roll, pitch, yaw = np.deg2rad([roll, pitch, yaw])
+    # inputs already in radians (see _pose: SimOne vehicle-JSON roll/pitch/yaw
+    # are radians, e.g. a rear camera has yaw=pi)
     cr, sr, cp, sp, cy, sy = np.cos(roll), np.sin(roll), np.cos(pitch), np.sin(pitch), np.cos(yaw), np.sin(yaw)
     rx = np.array([[1,0,0],[0,cr,-sr],[0,sr,cr]])
     ry = np.array([[cp,0,sp],[0,1,0],[-sp,0,cp]])
@@ -68,8 +78,10 @@ def _pose(sensor: dict):
         translation = np.array([_value(pose,'x'), _value(pose,'y'), _value(pose,'z')], np.float64)
     r = _value(pose, 'roll_pitch_yaw_deg', 'rotation', default=None)
     if isinstance(r, list) and len(r) >= 3:
-        angles = [float(x) for x in r[:3]]
+        # *_deg / rotation list are in degrees; convert to radians.
+        angles = list(np.deg2rad([float(x) for x in r[:3]]))
     else:
+        # Plain roll/pitch/yaw from SimOne vehicle JSON are already radians.
         angles = [_value(pose,'roll'), _value(pose,'pitch'), _value(pose,'yaw')]
     return translation, _rotation_zyx(*angles)
 
@@ -101,9 +113,12 @@ def configure(camera: dict, lidar: dict) -> dict:
         matrix = [[fx,0,cx],[0,fy,cy],[0,0,1]]
     distortion = intr.get('opencv_distortion_coefficients')
     if distortion is None:
+        # 8-param rational model (k1,k2,p1,p2,k3,k4,k5,k6); k4..k6 default 0,
+        # which reduces exactly to the 5-param model.
         distortion = [_value(intr,'k1','K1'), _value(intr,'k2','K2'),
                       _value(intr,'p1','P1'), _value(intr,'p2','P2'),
-                      _value(intr,'k3','K3')]
+                      _value(intr,'k3','K3'), _value(intr,'k4','K4'),
+                      _value(intr,'k5','K5'), _value(intr,'k6','K6')]
     camera_t, camera_r = _pose(camera)
     lidar_t, lidar_r = _pose(lidar)
     # display3d.py: vehicle/LiDAR X-forward,Y-left,Z-up -> camera optical
@@ -116,8 +131,6 @@ def configure(camera: dict, lidar: dict) -> dict:
                    'distortion': np.asarray(distortion, np.float64),
                    'transform': transform, 'width': width, 'height': height}
         _last_lidar_fid = None
-        _render_times_ms.clear()
-        _render_fps_window.clear()
     _ensure_worker()
     return {'ok': True, 'camera_matrix': matrix,
             'T_camera_optical_from_lidar': transform.tolist()}
@@ -134,7 +147,29 @@ def _colors(intensity: np.ndarray) -> np.ndarray:
     return np.stack([b, np.clip(g,0,255), np.clip(r,0,255)], axis=1).astype(np.uint8)
 
 
-def _render(camera: dict, lidar: dict, cfg: dict):
+def _color_points(source: np.ndarray, mode: str) -> np.ndarray:
+    """BGR colors per point for the requested color mode.
+
+    - intensity: jet colormap over the intensity channel (source[:,3])
+    - height:    jet colormap over auto-ranged world Z (source[:,2])
+    - flat:      single green for all points
+    """
+    n = len(source)
+    if n == 0:
+        return np.zeros((0, 3), np.uint8)
+    if mode == 'flat':
+        return np.tile(np.array([0, 255, 0], np.uint8), (n, 1))
+    if mode == 'height':
+        z = source[:, 2].astype(np.float32)
+        zmin, zmax = float(z.min()), float(z.max())
+        rng = zmax - zmin
+        norm = (z - zmin) / rng * 255.0 if rng > 1e-6 else np.zeros_like(z)
+        return _colors(norm)
+    inten = source[:, 3] if source.shape[1] > 3 else np.zeros(n)
+    return _colors(inten)
+
+
+def _render(camera: dict, lidar: dict, cfg: dict, opts: dict):
     image = cv2.imdecode(np.frombuffer(camera['jpeg'], np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError('camera JPEG decode failed')
@@ -149,14 +184,19 @@ def _render(camera: dict, lidar: dict, cfg: dict):
     valid = ((pixels[:,0]>=0)&(pixels[:,0]<image.shape[1])&
              (pixels[:,1]>=0)&(pixels[:,1]<image.shape[0]))
     pixels, source = pixels[valid], source[valid]
-    colors = _colors(source[:,3] if source.shape[1] > 3 else np.zeros(len(source)))
-    # Vectorized splat instead of one cv2.circle() Python call per point (was the
-    # dominant cost at 50k+ points/frame — 60-150x fewer Python/OpenCV calls).
+    colors = _color_points(source, opts.get('color_mode', 'intensity'))
+    # Vectorized square splat (radius from opts) instead of one cv2.circle() call
+    # per point — each dx/dy offset is a single fully-vectorized assignment.
     h, w = image.shape[:2]
     xs, ys = pixels[:, 0], pixels[:, 1]
-    image[ys, xs] = colors
-    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-        image[np.clip(ys + dy, 0, h - 1), np.clip(xs + dx, 0, w - 1)] = colors
+    radius = int(opts.get('point_size', 1))
+    if radius <= 0:
+        image[ys, xs] = colors
+    else:
+        for dy in range(-radius, radius + 1):
+            cy = np.clip(ys + dy, 0, h - 1)
+            for dx in range(-radius, radius + 1):
+                image[cy, np.clip(xs + dx, 0, w - 1)] = colors
     ok, encoded = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not ok:
         raise ValueError('fusion JPEG encode failed')
@@ -174,23 +214,6 @@ def _circular_ms_diff(a: int, b: int, wrap: int = 65536) -> int:
     return min(d, wrap - d)
 
 
-def _render_perf_snapshot() -> dict:
-    """Must be called with _lock held. Returns the rolling render_fps/
-    render_avg_ms/render_max_ms perf summary (empty dict if no data yet)."""
-    times = list(_render_times_ms)
-    fps_window = list(_render_fps_window)
-    perf = {}
-    if times:
-        perf['render_avg_ms'] = round(sum(times) / len(times), 1)
-        perf['render_max_ms'] = round(max(times), 1)
-    if len(fps_window) >= 2:
-        span_s = fps_window[-1] - fps_window[0]
-        if span_s > 0:
-            # (n-1) intervals across n timestamps in the rolling window.
-            perf['render_fps'] = round((len(fps_window) - 1) / span_s, 2)
-    return perf
-
-
 def _worker_loop():
     global _sequence, _jpeg, _meta, _last_lidar_fid
     while True:
@@ -198,6 +221,7 @@ def _worker_loop():
             cameras, lidars = get_fusion_frames(), get_lidar_frames()
             with _lock:
                 cfg = copy.deepcopy(_config)
+                opts = dict(_render_opts)
             if not cfg or not cameras or not lidars:
                 time.sleep(.03); continue
             # Anchor on the newest completed LiDAR frame rather than the newest
@@ -235,19 +259,11 @@ def _worker_loop():
                 # moment, which would otherwise look like a bad/wrong calibration.
                 _last_lidar_fid = lidar_fid
                 time.sleep(.01); continue
-            render_t0 = time.perf_counter()
-            jpeg, projected = _render(camera, lidar, cfg)
-            render_ms = (time.perf_counter() - render_t0) * 1000.0
-            now_wall = time.time()
-            with _lock:
-                _render_times_ms.append(render_ms)
-                _render_fps_window.append(now_wall)
-                perf = _render_perf_snapshot()
+            jpeg, projected = _render(camera, lidar, cfg, opts)
             with _cond:
                 _last_lidar_fid = lidar_fid; _sequence += 1; _jpeg = jpeg
                 _meta = {'camera_frame': _camera_key(camera), 'lidar_frame': lidar_fid,
-                         'projected_points': projected, 'match_residual_ms': residual_ms,
-                         'render_ms': round(render_ms, 1), **perf}
+                         'projected_points': projected, 'match_residual_ms': residual_ms}
                 _cond.notify_all()
         except Exception as exc:
             with _lock:
@@ -273,6 +289,4 @@ def get_frame(after: int, timeout: float = 2.0):
 
 def get_status():
     with _lock:
-        perf = _render_perf_snapshot()
-        return {'configured': _config is not None, 'sequence': _sequence,
-                **perf, **_meta}
+        return {'configured': _config is not None, 'sequence': _sequence, **_meta}

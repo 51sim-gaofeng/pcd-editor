@@ -30,6 +30,9 @@ CHECKS = [
     ("GET /static/three_view.js","/static/three_view.js", 200, "javascript"),
     ("GET /static/ui.js",        "/static/ui.js",         200, "javascript"),
     ("GET /api/files",           "/api/files",            200, "application/json"),
+    # Fusion status imports model.fusion_model -> cv2; catches a missing opencv
+    # bundle in the packaged exe (would otherwise 500 here).
+    ("GET /api/fusion_status",   "/api/fusion_status",    200, "application/json"),
 ]
 
 

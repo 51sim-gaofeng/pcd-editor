@@ -1,3 +1,53 @@
+## v0.8.1 — 修复畸变投影（支持 8 参数畸变模型）
+
+### 修复
+- **Fusion 相机畸变投影修正**：按字段拼装畸变系数时之前只取到 5 参（k1,k2,p1,p2,k3），现扩展为 8 参有理模型（k1,k2,p1,p2,k3,**k4,k5,k6**），`k4/k5/k6` 缺失默认 0 时精确退化为原 5 参模型；显式提供 `opencv_distortion_coefficients` 的路径本就原样透传，任意长度（4/5/8/12/14）均支持。带 k4/k5/k6 的相机标定投影不再出现边缘偏移。
+
+---
+
+## v0.8 — Fusion 融合模式（激光雷达-相机投影）+ 全链路去 DLL 化
+
+### 核心新增
+
+#### Fusion 融合模式（全新）
+- 新增 **Fusion 标签页**：把实时激光雷达点云按标定投影叠加到实时相机图像上
+- **导入主车 JSON**：自动读取相机内参/畸变 + 相机与激光雷达外参，构建"相机光学系 ← 激光雷达系"变换矩阵；支持 `cx_px/cy_px` 绝对像素坐标，`offsetCx/offsetCy` 为 0 时回退到图像中心
+- **相机/激光雷达选择器**：从 JSON 里挑选要融合的具体传感器
+- **以激光雷达帧为锚的帧对齐**：每来一个完整的激光雷达帧，就用"环形绕回感知的毫秒距离"从相机流里挑最近的一帧配对（激光雷达约 100ms 一帧、相机约 33ms 一帧，用密集的相机流去匹配稀疏的激光帧残差最小）；配对时间差超过阈值直接跳过，不强行融合明显不同时刻的两个传感器
+- **Pause / Step**：冻结画面并逐帧步进，便于检查对齐
+- **投影点参数复用 View 面板**：`Points → Size` 滑块和 `Color` 下拉（Intensity / Height(Z) / Flat）实时驱动融合叠加效果，跟 PCD/3DGS 用的是同一套控件（`/api/fusion_render_options`）；进入 Fusion 模式时 Color 默认切到 Intensity（退出时恢复原模式）
+
+#### Fusion 易用性增强（多相机 / 免重导入 / 实时切换）
+- **多相机端口自动填充**：切换 Camera / LiDAR 下拉时，自动从所选传感器的 `subscriptionChannel` / `deviceInfoChannel` 解析出端口和 IP 回填到接收器输入框（多路相机各自端口不同，之前一直卡在第一路的端口）
+- **运行中实时切换传感器**：融合运行时切换相机/雷达会自动重算投影矩阵（`/api/fusion_config`）+ 重绑接收器端口（`/api/fusion_ensure`），无需先停止再重启
+- **主车 JSON 缓存 + 下拉复用**：导入的主车 JSON 会保存到软件缓存目录（`<data_dir>/_vehicles/`），新增下拉列表可直接复用，不用每次重新导入（`/api/upload_vehicle_json`、`/api/vehicle_json_files`、`/api/vehicle_json`）
+- **停止融合保留画面**：Stop Fusion 后保留最后一帧融合结果，不再清屏
+
+#### 全链路去 DLL 化（纯 Python 接收）
+- Camera（GVSP）、Streaming 激光雷达（MSOP/DIFOP）以及 Fusion，全部改为纯 Python 解码，**不再依赖 SimOneStreamingAPI.dll 及其打包运行时**（`runtime/simone/Win64` 已移除，spec 不再打包）
+- 直接运行和 PyInstaller 打包都不再需要外部 SDK、安装路径或盘符假设
+- **踩坑修正**：C++ 官方 SDK 参考实现里的时间戳字段解析公式不能照搬——同一 `SimTimestamp` 结构体里 `year/month/day/...` 是真实墙钟时间，而 `ms/us` 是仿真相对时间（`frame_id/hz`），来自不同时钟源，必须按实际发送端（`simone_publisher.py`/`udp_utils.py`）的编码方式解析
+
+### 性能与稳定性
+
+- **融合渲染向量化**：投影点绘制从"逐点 `cv2.circle()`"改为向量化的 numpy 方块 splat，5 万+ 点/帧场景下实测提速约 49 倍（335ms → 6.8ms）
+- **Streaming 接收加固**：
+  - 单个 scan 的累积包数超过上限时（END 包丢失/流异常）主动丢弃部分帧并重新同步，避免 `scan_packets` 无限增长导致 OOM
+  - 每包处理加 try/except 守卫，单个畸形包不会静默杀死接收线程
+
+### 修复
+
+- **相机外参旋转弧度/角度修正**：SimOne 主车 JSON 的 `roll/pitch/yaw` 是弧度（后向相机 yaw=π=180°），但之前 `_rotation_zyx` 里做了 `deg2rad` 当成角度处理，导致后向相机投影矩阵几乎变成单位阵、点云完全对不齐；现只对 `*_deg`/`rotation` 列表字段做角度转换，普通 `roll/pitch/yaw` 直接当弧度用
+- 默认传感器/DDS 地址统一改回 `127.0.0.1`（前端输入框 + 后端兜底默认值）
+- 融合停止时清除残留的叠加信息角标
+- 激光雷达帧号显示按相机侧同款方式解绕回，保持一致
+
+### 升级说明
+- 新增依赖：`opencv-python`（Fusion 融合渲染需要）
+- 向后兼容：v0.6 的所有功能（PCD、DDS、Camera、3DGS、菜单栏）保持不变
+
+---
+
 ## v0.6 — 菜单栏/欢迎页、3DGS 大文件加载修复、Filter Z 扩展、渲染性能优化
 
 ### 核心新增

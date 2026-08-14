@@ -750,8 +750,8 @@ async function loadFile(path){
     document.getElementById('info').textContent=npoints.toLocaleString()+' pts'+(original_count!==npoints?' (↓'+original_count.toLocaleString()+')':'')+'  ·  '+(fname||path);setStatus('OK','ok');
   }catch(e){setStatus('fetch error','err');}
 }
-function updatePointSize(v){document.getElementById('pt-size-val').textContent=parseFloat(v).toFixed(1);window._three.setPointSize(parseFloat(v));window._three.setPickThreshold(parseFloat(v)*0.05);}
-function applyColorMode(v){window._three.setColorMode(v);}function resetCamera(){window._three.resetCamera();}
+function updatePointSize(v){document.getElementById('pt-size-val').textContent=parseFloat(v).toFixed(1);window._three.setPointSize(parseFloat(v));window._three.setPickThreshold(parseFloat(v)*0.05);if(_fusionMode){const r=Math.max(0,Math.min(8,Math.round(parseFloat(v))));fetch('/api/fusion_render_options?point_size='+r).catch(()=>{});}}
+function applyColorMode(v){window._three.setColorMode(v);if(_fusionMode){fetch('/api/fusion_render_options?color_mode='+encodeURIComponent(v)).catch(()=>{});}}function resetCamera(){window._three.resetCamera();}
 function applyGrid(){
   const show=document.getElementById('grid-show').checked;
   const size=Math.max(1,parseFloat(document.getElementById('grid-size').value)||200);
@@ -941,8 +941,8 @@ refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();_init
 // 鈹€鈹€ Camera mode (GVSP UDP receiver) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 const _CAM_PCD_SECTIONS=['sec-file','sec-play','sec-streaming','sec-dds'];
 let _camMode=false,_camActive=false,_camLastId=-1,_camSourceFrameId=-1,_camDisplayFrameId=-1;
-let _fusionMode=false,_fusionVehicleJson=null,_fusionSensors=[];
-let _fusionActive=false,_fusionLastSequence=-1,_fusionAbort=null,_fusionBlobUrl=null;
+let _fusionMode=false,_calibrationMode=false,_fusionVehicleJson=null,_fusionSensors=[];
+let _fusionActive=false,_fusionLastSequence=-1,_fusionAbort=null,_fusionBlobUrl=null,_fusionPrevColorMode=null;
 let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0,_camLastBuf=null;
 let _camShowFps=true;
 function _camGetCanvasCtx(){
@@ -1053,34 +1053,50 @@ async function _camDrainFrames(){
 function switchMode(mode){
   const toCam=mode==='cam';
   const toFusion=mode==='fusion';
+  const toCalibration=mode==='calibration';
   const toGs=mode==='gs';
-  const toPcd=!toCam&&!toFusion&&!toGs;
-  if(_camMode===toCam&&_fusionMode===toFusion&&!toGs){if(!toPcd)return;}
+  const toPcd=!toCam&&!toFusion&&!toCalibration&&!toGs;
+  if(_camMode===toCam&&_fusionMode===toFusion&&_calibrationMode===toCalibration&&!toGs){if(!toPcd)return;}
   _camMode=toCam;
   _fusionMode=toFusion;
+  _calibrationMode=toCalibration;
   if(!toFusion&&_fusionActive)fusionStop();
+  // Fusion defaults to Intensity color; remember the prior mode to restore on exit.
+  const _cmSel=document.getElementById('color-mode');
+  if(toFusion&&_fusionPrevColorMode===null&&_cmSel){
+    _fusionPrevColorMode=_cmSel.value;
+    _cmSel.value='intensity';applyColorMode('intensity');
+  }else if(!toFusion&&_fusionPrevColorMode!==null){
+    if(_cmSel){_cmSel.value=_fusionPrevColorMode;applyColorMode(_fusionPrevColorMode);}
+    _fusionPrevColorMode=null;
+  }
   document.getElementById('tab-pcd').classList.toggle('active',toPcd);
   document.getElementById('tab-cam').classList.toggle('active',toCam);
   document.getElementById('tab-fusion').classList.toggle('active',toFusion);
+  document.getElementById('tab-calibration')?.classList.toggle('active',toCalibration);
   const tabGs=document.getElementById('tab-gs');if(tabGs)tabGs.classList.toggle('active',toGs);
-  _CAM_PCD_SECTIONS.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion||toGs)?'none':'';});
+  _CAM_PCD_SECTIONS.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion||toCalibration||toGs)?'none':'';});
   // View/Edit Cloud/Trajectory toolbar also works in 3DGS mode (same camera/scene),
   // just not in Camera mode (no 3D scene there at all).
-  const vpToolbar=document.getElementById('viewport-toolbar');if(vpToolbar)vpToolbar.style.display=toCam?'none':'';
-  if(toCam)closeViewportPanel();
-  if(toCam||toFusion||toGs){
+  const vpToolbar=document.getElementById('viewport-toolbar');if(vpToolbar)vpToolbar.style.display=(toCam||toCalibration)?'none':'';
+  if(toCam||toCalibration)closeViewportPanel();
+  if(toCam||toFusion||toCalibration||toGs){
     _stopPlay();               // stop PCD playback loop so it can't keep re-adding the cloud
     if(_smActive)streamingStop();
     if(_ddsActive)ddsStop();
   }
   const secCam=document.getElementById('sec-camera');if(secCam)secCam.style.display=toCam?'':'none';
   const secFusion=document.getElementById('sec-fusion');if(secFusion)secFusion.style.display=toFusion?'':'none';
+  const secCalibration=document.getElementById('sec-calibration');if(secCalibration)secCalibration.style.display=toCalibration?'':'none';
+  if(toFusion)_fusionRefreshJsonList(document.getElementById('fusion-json-select')?.value||'');
   const secGs=document.getElementById('sec-gs');if(secGs)secGs.style.display=toGs?'':'none';
   const camWrap=document.getElementById('camera-wrap');if(camWrap)camWrap.classList.toggle('active',toCam);
   const fusionWrap=document.getElementById('fusion-wrap');if(fusionWrap)fusionWrap.classList.toggle('active',toFusion);
-  ['cv','lasso-canvas'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion)?'none':'';});
-  const axesLabel=document.getElementById('axes-label');if(axesLabel)axesLabel.style.display=(toCam||toFusion)?'none':'';
-  const ovl=document.getElementById('overlay');if(ovl)ovl.style.display=(toCam||toFusion||toGs)?'none':'';
+  const calibrationWrap=document.getElementById('calibration-wrap');if(calibrationWrap)calibrationWrap.classList.toggle('active',toCalibration);
+  if(!toCalibration)calibCaptureStop(true);
+  ['cv','lasso-canvas'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion||toCalibration)?'none':'';});
+  const axesLabel=document.getElementById('axes-label');if(axesLabel)axesLabel.style.display=(toCam||toFusion||toCalibration)?'none':'';
+  const ovl=document.getElementById('overlay');if(ovl)ovl.style.display=(toCam||toFusion||toCalibration||toGs)?'none':'';
   const ovlText=ovl?.querySelector('span:last-child');if(ovlText)ovlText.textContent=toGs?'':'Select a PCD file';
   setGsOverlay(toGs?'idle':'hidden');
   if(!toCam){
@@ -1101,6 +1117,98 @@ function switchMode(mode){
     window._three?.setSceneAxesVisible?.(true);
   }
   if(!toGs&&window._gaussian){window._gaussian.dispose();}
+}
+
+let _calibImageDir='',_calibImageDirSelected=false,_calibCaptureDir='',_calibCaptureTimer=null,_calibAutoStatusTimer=null;
+async function calibPickFolder(purpose){
+  const current=purpose==='capture'?_calibCaptureDir:_calibImageDir;
+  const r=await fetch('/api/calibration_pick_dir?purpose='+purpose+'&dir='+encodeURIComponent(current||''));
+  const d=await r.json(); if(d.error){calibSetStatus(d.error,true);return false;} if(!d.path)return false;
+  if(purpose==='capture'){
+    _calibCaptureDir=d.path;document.getElementById('calib-capture-dir').textContent=d.path;document.getElementById('calib-capture-dir').style.display='';
+    document.getElementById('calib-capture-status').textContent='Save folder selected';
+  }else{
+    _calibImageDir=d.path;_calibImageDirSelected=true;document.getElementById('calib-image-dir').textContent=d.path;document.getElementById('calib-image-dir').style.display='';calibSetStatus('Image folder selected');
+  }
+  return true;
+}
+function calibSetStatus(text,error=false){const el=document.getElementById('calib-status');if(el){el.textContent=text;el.classList.toggle('error',error);}}
+async function calibRun(){
+  const model=document.getElementById('calib-camera-type').value;
+  if(!model){calibSetStatus('Select a camera model before calibration.',true);return;}
+  if(!_calibImageDirSelected&&!await calibPickFolder('images'))return;
+  const btn=document.getElementById('calib-run-btn');btn.disabled=true;btn.textContent='Detecting corners and calibrating…';calibSetStatus('Processing, please wait');
+  const payload={folder:_calibImageDir,output_dir:_calibImageDir,model,
+    rows:+document.getElementById('calib-rows').value,cols:+document.getElementById('calib-cols').value,
+    square_mm:+document.getElementById('calib-square').value,min_images:+document.getElementById('calib-min-images').value};
+  try{
+    const d=await (await fetch('/api/calibration_run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json();
+    if(!d.ok)throw new Error(d.error||'Calibration failed');
+    const coeffNames=d.model.startsWith('fisheye')?['k1','k2','k3','k4']:['k1','k2','p1','p2','k3','k4','k5','k6'];
+    const coeff=d.distortion_coefficients.map((v,i)=>`${coeffNames[i]} = ${Number(v).toPrecision(10)}`).join('\n');
+    const fx=d.camera_matrix[0][0],fy=d.camera_matrix[1][1],cx=d.camera_matrix[0][2],cy=d.camera_matrix[1][2];
+    const offsetCx=cx-d.image_size[0]/2,offsetCy=cy-d.image_size[1]/2;
+    const warnings=(d.diagnostics?.warnings||[]).map(x=>'Warning: '+x).join('\n');
+    const metric=d.display_reprojection||{value_px:d.mean_reprojection_error,source:'estimated_pose',file:null};
+    const isReference=metric.source==='reference_pose';
+    const metricLabel=metric.label||(isReference?'Single-Image Reprojection RMS (Reference Pose)':'Single-Image Reprojection RMS (Estimated Extrinsics)');
+    const metricNote=metric.note||(isReference?'Uses the distance encoded in the filename and assumes the board is centered and perpendicular to the optical axis.':'No valid named preview image was found; uses the first valid image and its estimated extrinsics.');
+    const metricFile=metric.file?`\nValidation Image: ${metric.file}`:'';
+    const meanPixelError=Number(metric.mean_pixel_error_px);
+    const meanPixelLine=Number.isFinite(meanPixelError)?`\nMean Pixel Error: ${meanPixelError.toFixed(6)} px`:'';
+    const relativeDistanceError=Number(metric.distance_relative_error_percent);
+    const distanceLines=Number.isFinite(relativeDistanceError)?`\nRelative Distance Error: ${relativeDistanceError.toFixed(6)} %`:'';
+    const reprojectionMetrics=`${metricLabel}: ${Number(metric.value_px).toFixed(6)} px${meanPixelLine}${distanceLines}${metricFile}`;
+    const out=`Model: ${d.model}\nValid Images: ${d.valid_images.length} / ${d.valid_images.length+d.rejected_images.length}${warnings?'\n'+warnings:''}\n\nFocal Length Fx = ${fx.toFixed(6)}\nFocal Length Fy = ${fy.toFixed(6)}\nPrincipal Point cx (absolute pixel) = ${cx.toFixed(6)}\nPrincipal Point cy (absolute pixel) = ${cy.toFixed(6)}\nCenter Offset Cx = ${offsetCx.toFixed(6)}\nCenter Offset Cy = ${offsetCy.toFixed(6)}\n\nDistortion Coefficients D:\n${coeff}\n\n${reprojectionMetrics}\n\nNote: ${metricNote}\n\nReprojection Image: ${d.reprojection_file}\nResult: ${d.json_file}`;
+    const result=document.getElementById('calib-result');result.textContent=out;result.style.display='block';
+    calibSetStatus('Calibration complete. JSON, NPY, and preview files were saved to the image folder.');calibShowPreview(d.undistorted_url,'Undistortion Preview');
+  }catch(e){calibSetStatus(e.message,true);}finally{btn.disabled=false;btn.textContent='Start Offline Calibration';}
+}
+function calibShowPreview(url,label){
+  const img=document.getElementById('calib-preview'),empty=document.getElementById('calib-empty');
+  img.src=url+(url.includes('?')?'&':'?')+'_t='+Date.now();img.style.display='block';empty.style.display='none';
+  document.getElementById('calib-preview-label').textContent=label;
+}
+async function calibCaptureStart(){
+  const payload={host:document.getElementById('calib-udp-host').value.trim()||'127.0.0.1',port:+document.getElementById('calib-udp-port').value};
+  const d=await (await fetch('/api/calibration_capture_start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json();
+  if(!d.ok){document.getElementById('calib-capture-status').textContent=d.error;return;}
+  document.getElementById('calib-capture-status').textContent='UDP receiver started · Waiting for image stream';
+  document.getElementById('calib-receive-btn').textContent='Restart Receiver';
+  clearInterval(_calibCaptureTimer);_calibCaptureTimer=setInterval(()=>calibShowPreview('/api/calibration_capture_frame','Live Camera Feed'),120);
+}
+async function calibCaptureSave(){
+  if(!await calibPickFolder('capture'))return;
+  const d=await (await fetch('/api/calibration_capture_save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:_calibCaptureDir})})).json();
+  document.getElementById('calib-capture-status').textContent=d.ok?'Saved: '+d.file:(d.error||'Save failed');
+}
+async function calibAutoCaptureStart(){
+  if(!await calibPickFolder('capture'))return;
+  const d=await (await fetch('/api/calibration_auto_capture_start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:_calibCaptureDir})})).json();
+  const el=document.getElementById('calib-capture-status');
+  if(!d.ok){el.textContent=d.error||'Failed to start auto capture';return;}
+  document.getElementById('calib-auto-btn').disabled=true;
+  el.textContent='Auto capture running · 0 images saved';
+  clearInterval(_calibAutoStatusTimer);_calibAutoStatusTimer=setInterval(async()=>{
+    try{
+      const s=await (await fetch('/api/calibration_capture_status')).json();
+      el.textContent=s.auto_error?'Auto capture stopped: '+s.auto_error:(s.auto_capture?'Auto capture running · '+s.auto_saved+' images saved':'Auto capture stopped · '+s.auto_saved+' images saved');
+      if(!s.auto_capture){clearInterval(_calibAutoStatusTimer);_calibAutoStatusTimer=null;document.getElementById('calib-auto-btn').disabled=false;}
+    }catch(_e){}
+  },500);
+}
+async function calibAutoCaptureStop(silent=false){
+  clearInterval(_calibAutoStatusTimer);_calibAutoStatusTimer=null;
+  let d={};try{d=await (await fetch('/api/calibration_auto_capture_stop',{method:'POST'})).json();}catch(_e){}
+  const btn=document.getElementById('calib-auto-btn');if(btn)btn.disabled=false;
+  if(!silent){const el=document.getElementById('calib-capture-status');if(el)el.textContent='Auto capture stopped · '+(d.auto_saved||0)+' images saved';}
+}
+async function calibCaptureStop(silent=false){
+  await calibAutoCaptureStop(true);
+  clearInterval(_calibCaptureTimer);_calibCaptureTimer=null;
+  try{await fetch('/api/calibration_capture_stop',{method:'POST'});}catch(_e){}
+  const btn=document.getElementById('calib-receive-btn');if(btn)btn.textContent='Start Receiver';
+  if(!silent){const el=document.getElementById('calib-capture-status');if(el)el.textContent='UDP receiver stopped';}
 }
 
 function _fusionWalkSensors(value,path='',out=[]){
@@ -1128,22 +1236,51 @@ function _fusionFillSelect(id,category){
   sensors.forEach((s,i)=>{const o=document.createElement('option');o.value=s.path;o.textContent=s.name;o.dataset.index=String(i);el.appendChild(o);});
   if(sensors.length){el.value=sensors[0].path;}
 }
+function _fusionApplyParsedJson(parsed,label){
+  const parameterList=document.getElementById('fusion-parameters');
+  if(parameterList)parameterList.open=false;
+  _fusionVehicleJson=parsed;
+  const found=_fusionWalkSensors(parsed);
+  const seen=new Set();
+  _fusionSensors=found.filter(s=>{const key=s.category+'|'+s.path;if(seen.has(key))return false;seen.add(key);return true;});
+  _fusionFillSelect('fusion-camera-select','camera');
+  _fusionFillSelect('fusion-lidar-select','lidar');
+  const cameras=_fusionSensors.filter(s=>s.category==='camera').length;
+  const lidars=_fusionSensors.filter(s=>s.category==='lidar').length;
+  document.getElementById('fusion-json-name').textContent=label+' · '+cameras+' camera · '+lidars+' lidar';
+  fusionSelectionChanged();
+}
+async function _fusionRefreshJsonList(selectName){
+  try{
+    const r=await fetch('/api/vehicle_json_files',{cache:'no-store'});
+    const j=await r.json();
+    const sel=document.getElementById('fusion-json-select');if(!sel)return;
+    const files=(j&&j.files)||[];
+    sel.innerHTML='<option value="">\u2014 saved vehicle JSON \u2014</option>';
+    files.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});
+    if(selectName&&files.includes(selectName))sel.value=selectName;
+  }catch(_e){}
+}
+async function fusionLoadSavedJson(name){
+  if(!name)return;
+  try{
+    const r=await fetch('/api/vehicle_json?name='+encodeURIComponent(name),{cache:'no-store'});
+    if(!r.ok)throw new Error('not found on server');
+    _fusionApplyParsedJson(await r.json(),name);
+    setStatus('Loaded vehicle JSON: '+name,'ok');
+  }catch(e){setStatus('Load vehicle JSON failed: '+e.message,'err');}
+}
 async function fusionImportVehicleJson(file){
   if(!file)return;
   try{
-    const parameterList=document.getElementById('fusion-parameters');
-    if(parameterList)parameterList.open=false;
-    const parsed=JSON.parse(await file.text());
-    _fusionVehicleJson=parsed;
-    const found=_fusionWalkSensors(parsed);
-    const seen=new Set();
-    _fusionSensors=found.filter(s=>{const key=s.category+'|'+s.path;if(seen.has(key))return false;seen.add(key);return true;});
-    _fusionFillSelect('fusion-camera-select','camera');
-    _fusionFillSelect('fusion-lidar-select','lidar');
-    const cameras=_fusionSensors.filter(s=>s.category==='camera').length;
-    const lidars=_fusionSensors.filter(s=>s.category==='lidar').length;
-    document.getElementById('fusion-json-name').textContent=file.name+' · '+cameras+' camera · '+lidars+' lidar';
-    fusionSelectionChanged();
+    const text=await file.text();
+    _fusionApplyParsedJson(JSON.parse(text),file.name);
+    // Persist to the server cache so it can be re-selected without re-importing.
+    try{
+      const r=await fetch('/api/upload_vehicle_json',{method:'POST',headers:{'X-Filename':encodeURIComponent(file.name)},body:text});
+      const j=await r.json();
+      if(j&&j.ok)await _fusionRefreshJsonList(j.name);
+    }catch(_e){}
     setStatus('Vehicle JSON imported','ok');
   }catch(e){
     _fusionVehicleJson=null;_fusionSensors=[];
@@ -1170,8 +1307,61 @@ function _fusionRelevant(sensor){
     intrinsic:d.intrinsics??d.params??d.camera_matrix??d.capture??d.scan??null
   };
 }
+function _fusionParseUdp(url){
+  const m=/(?:udp|dds):\/\/([^:/]+):(\d+)/i.exec(String(url||''));
+  return m?{ip:m[1],port:m[2]}:null;
+}
+// Best image-stream subscriptionChannel inside a camera sensor node.
+function _fusionCameraChannel(node){
+  let best=null,fallback=null;
+  (function walk(n){
+    if(!n||typeof n!=='object')return;
+    if(Array.isArray(n)){n.forEach(walk);return;}
+    if(typeof n.subscriptionChannel==='string'){
+      const fmt=String(n.format||'').toLowerCase();
+      const isImg=/jpeg|jpg|rgb|yuv|h26|nv12|image/.test(fmt);
+      if(isImg&&n.checked!==false&&!best)best=n.subscriptionChannel;
+      if(!fallback)fallback=n.subscriptionChannel;
+    }
+    Object.values(n).forEach(walk);
+  })(node);
+  return best||fallback;
+}
+// LiDAR point-cloud + DIFOP channels (the node that carries deviceInfoChannel).
+function _fusionLidarChannels(node){
+  let sub=null,info=null;
+  (function walk(n){
+    if(!n||typeof n!=='object')return;
+    if(Array.isArray(n)){n.forEach(walk);return;}
+    if(typeof n.deviceInfoChannel==='string'){
+      info=info||n.deviceInfoChannel;
+      if(typeof n.subscriptionChannel==='string')sub=sub||n.subscriptionChannel;
+    }
+    Object.values(n).forEach(walk);
+  })(node);
+  if(!sub){(function walk(n){if(!n||typeof n!=='object')return;if(Array.isArray(n)){n.forEach(walk);return;}if(typeof n.subscriptionChannel==='string')sub=sub||n.subscriptionChannel;Object.values(n).forEach(walk);})(node);}
+  return {sub,info};
+}
 function fusionSelectionChanged(){
   const camera=_fusionSelectedSensor('camera'),lidar=_fusionSelectedSensor('lidar');
+  // Auto-fill receiver endpoints from the selected sensors' subscription channels
+  // so switching between multiple cameras/lidars updates the ports to match.
+  if(camera){
+    const cc=_fusionParseUdp(_fusionCameraChannel(camera.data));
+    if(cc){
+      const cp=document.getElementById('fusion-camera-port');if(cp)cp.value=cc.port;
+      const ip=document.getElementById('fusion-lidar-ip');if(ip&&cc.ip)ip.value=cc.ip;
+    }
+  }
+  if(lidar){
+    const lc=_fusionLidarChannels(lidar.data);
+    const sub=_fusionParseUdp(lc.sub),info=_fusionParseUdp(lc.info);
+    if(sub){
+      const lp=document.getElementById('fusion-lidar-port');if(lp)lp.value=sub.port;
+      const ip=document.getElementById('fusion-lidar-ip');if(ip&&sub.ip)ip.value=sub.ip;
+    }
+    if(info){const ipr=document.getElementById('fusion-info-port');if(ipr)ipr.value=info.port;}
+  }
   const box=document.getElementById('fusion-calibration-summary');if(!box)return;
   if(!camera||!lidar){
     box.textContent='JSON imported, but both a camera and a LiDAR sensor are required.';
@@ -1180,6 +1370,32 @@ function fusionSelectionChanged(){
   box.textContent='Camera\n'+JSON.stringify(_fusionRelevant(camera),null,2)
     +'\n\nLiDAR\n'+JSON.stringify(_fusionRelevant(lidar),null,2)
     +'\n\nReady for display.py calibration.';
+  // If fusion is already running, live-recompute the projection matrix and
+  // rebind receivers to the newly selected camera/LiDAR (ports + calibration).
+  if(_fusionActive){
+    _fusionApply(camera,lidar).then(()=>{
+      _fusionLastSequence=-1;
+      setStatus('Fusion re-applied: '+camera.name+' + '+lidar.name,'ok');
+    }).catch(e=>setStatus('Fusion re-apply failed: '+e.message,'err'));
+  }
+}
+async function _fusionApply(camera,lidar){
+  // Recompute the projection matrix (server-side) for the given sensors and
+  // (re)bind the receivers to their ports — shared by start and live re-select.
+  const configResponse=await fetch('/api/fusion_config',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({camera:camera.data,lidar:lidar.data})
+  });
+  const configured=await configResponse.json();
+  if(!configured.ok)throw new Error(configured.error||'configuration failed');
+  const ip=(document.getElementById('fusion-lidar-ip')?.value||'127.0.0.1').trim();
+  const q=new URLSearchParams({
+    lidar_ip:ip,lidar_port:document.getElementById('fusion-lidar-port')?.value||'6699',
+    info_port:document.getElementById('fusion-info-port')?.value||'7788',
+    camera_ip:ip,camera_port:document.getElementById('fusion-camera-port')?.value||'13956'
+  });
+  const started=await fetch('/api/fusion_ensure?'+q).then(r=>r.json());
+  if(!started.ok)throw new Error(started.error||'receiver start failed');
 }
 async function fusionStart(){
   if(_fusionActive){fusionStop();return;}
@@ -1188,34 +1404,31 @@ async function fusionStart(){
   const status=document.getElementById('fusion-run-status');
   try{
     status.textContent='applying calibration…';
-    const configResponse=await fetch('/api/fusion_config',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({camera:camera.data,lidar:lidar.data})
-    });
-    const configured=await configResponse.json();
-    if(!configured.ok)throw new Error(configured.error||'configuration failed');
-    const ip=(document.getElementById('fusion-lidar-ip')?.value||'127.0.0.1').trim();
-    const q=new URLSearchParams({
-      lidar_ip:ip,lidar_port:document.getElementById('fusion-lidar-port')?.value||'6699',
-      info_port:document.getElementById('fusion-info-port')?.value||'7788',
-      camera_ip:ip,camera_port:document.getElementById('fusion-camera-port')?.value||'13956'
-    });
-    const started=await fetch('/api/fusion_ensure?'+q).then(r=>r.json());
-    if(!started.ok)throw new Error(started.error||'receiver start failed');
+    await _fusionApply(camera,lidar);
+    _fusionSyncViewOptions();
     _fusionActive=true;_fusionLastSequence=-1;
     status.textContent='waiting for camera/LiDAR frames…';
     document.getElementById('fusion-start-btn').textContent='⏹ Stop Fusion';
     void _fusionPoll();
   }catch(e){status.textContent='error: '+e.message;setStatus('Fusion start failed','err');}
 }
+// Push the View panel's current Size/Color to the server so fused frames match
+// the same controls that drive PCD/3DGS rendering.
+function _fusionSyncViewOptions(){
+  const sz=document.getElementById('pt-size')?.value;
+  const cm=document.getElementById('color-mode')?.value;
+  const q=new URLSearchParams();
+  if(sz!=null)q.set('point_size',String(Math.max(0,Math.min(8,Math.round(parseFloat(sz))))));
+  if(cm)q.set('color_mode',cm);
+  if([...q.keys()].length)fetch('/api/fusion_render_options?'+q).catch(()=>{});
+}
 function fusionStop(){
   _fusionActive=false;
   if(_fusionAbort){_fusionAbort.abort();_fusionAbort=null;}
-  if(_fusionBlobUrl){URL.revokeObjectURL(_fusionBlobUrl);_fusionBlobUrl=null;}
-  const img=document.getElementById('fusion-img');if(img){img.src='';img.style.display='none';}
-  document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','flex');
+  // Keep the last fused frame on screen (don't clear img / revoke blob / show
+  // the empty placeholder) so the result stays visible after stopping.
   document.getElementById('fusion-start-btn').textContent='🔗 Apply & Start Fusion';
-  document.getElementById('fusion-run-status').textContent='off';
+  document.getElementById('fusion-run-status').textContent='stopped · last frame retained';
 }
 async function _fusionPoll(){
   while(_fusionActive&&_fusionMode){

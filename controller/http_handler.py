@@ -206,6 +206,22 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/pick_dir':
             self._handle_pick_dir(params)
 
+        elif path == '/api/calibration_pick_dir':
+            self._handle_calibration_pick_dir(params)
+
+        elif path == '/api/calibration_preview':
+            self._handle_calibration_preview(params)
+
+        elif path == '/api/calibration_capture_frame':
+            from model.calibration_model import capture_jpeg
+            jpeg = capture_jpeg()
+            if jpeg: self._binary(jpeg, 'image/jpeg')
+            else: self.send_error(404)
+
+        elif path == '/api/calibration_capture_status':
+            from model.calibration_model import capture_status
+            self._json(capture_status())
+
         elif path == '/api/set_dir':
             self._handle_set_dir(params)
 
@@ -328,6 +344,18 @@ class Handler(BaseHTTPRequestHandler):
             from model.fusion_model import get_status as fusion_status
             self._json(fusion_status())
 
+        elif path == '/api/fusion_render_options':
+            try:
+                from model.fusion_model import set_render_options
+                ps = params.get('point_size', [None])[0]
+                cm = params.get('color_mode', [None])[0]
+                opts = set_render_options(
+                    point_size=int(ps) if ps is not None else None,
+                    color_mode=cm)
+                self._json({'ok': True, **opts})
+            except (ValueError, IndexError):
+                self._json({'ok': False})
+
         elif path == '/api/fusion_frame':
             try:
                 after = int(params.get('after', ['-1'])[0])
@@ -378,6 +406,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/app_info':
             self._json(get_app_info())
 
+        elif path == '/api/vehicle_json_files':
+            self._json({'files': self._list_vehicle_json()})
+
+        elif path == '/api/vehicle_json':
+            self._serve_vehicle_json(params.get('name', [''])[0])
+
         elif path == '/api/welcome_pref':
             self._json({'show_welcome_on_startup': get_welcome_pref()})
 
@@ -392,6 +426,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_upload_pcd(); return
         if parsed.path == '/api/upload_ply':
             self._handle_upload_ply(); return
+        if parsed.path == '/api/upload_vehicle_json':
+            self._handle_upload_vehicle_json(); return
         length = int(self.headers.get('Content-Length', 0))
         body   = self.rfile.read(length)
         if parsed.path == '/api/trajectory':
@@ -409,6 +445,44 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(configure(data.get('camera') or {}, data.get('lidar') or {}))
             except Exception as e:
                 self._json({'ok': False, 'error': str(e)})
+        elif parsed.path == '/api/calibration_run':
+            try:
+                data = json.loads(body or b'{}')
+                from model.calibration_model import calibrate
+                self._json({'ok': True, **calibrate(
+                    data.get('folder', ''), data.get('rows', 0), data.get('cols', 0),
+                    data.get('square_mm', 0), data.get('model', 'normal5'),
+                    data.get('min_images', 5), data.get('output_dir') or data.get('folder', ''))})
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
+        elif parsed.path == '/api/calibration_capture_start':
+            try:
+                data = json.loads(body or b'{}')
+                from model.calibration_model import start_capture
+                self._json({'ok': True, **start_capture(data.get('folder', ''),
+                    data.get('host', '127.0.0.1'), data.get('port', 13956))})
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
+        elif parsed.path == '/api/calibration_capture_save':
+            try:
+                data = json.loads(body or b'{}')
+                from model.calibration_model import save_capture
+                self._json(save_capture(data.get('folder', '')))
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
+        elif parsed.path == '/api/calibration_auto_capture_start':
+            try:
+                data = json.loads(body or b'{}')
+                from model.calibration_model import start_auto_capture
+                self._json({'ok': True, **start_auto_capture(data.get('folder', ''))})
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
+        elif parsed.path == '/api/calibration_auto_capture_stop':
+            from model.calibration_model import stop_auto_capture
+            self._json({'ok': True, **stop_auto_capture()})
+        elif parsed.path == '/api/calibration_capture_stop':
+            from model.calibration_model import stop_capture
+            self._json({'ok': True, **stop_capture()})
         else:
             self.send_error(404)
 
@@ -595,6 +669,62 @@ class Handler(BaseHTTPRequestHandler):
             try: self._json({'ok': False, 'error': str(e)})
             except Exception: pass
 
+    def _vehicle_json_dir(self):
+        from config import config
+        return os.path.join(config.data_dir, '_vehicles')
+
+    def _list_vehicle_json(self):
+        d = self._vehicle_json_dir()
+        try:
+            return sorted(f for f in os.listdir(d) if f.lower().endswith('.json'))
+        except OSError:
+            return []
+
+    def _serve_vehicle_json(self, name: str):
+        name = os.path.basename(name or '')
+        if not name.lower().endswith('.json'):
+            self.send_error(404); return
+        full = os.path.join(self._vehicle_json_dir(), name)
+        if not os.path.isfile(full):
+            self.send_error(404); return
+        try:
+            with open(full, 'rb') as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            self.wfile.write(data)
+        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _handle_upload_vehicle_json(self):
+        """Persist an imported main-vehicle JSON so it can be re-selected later."""
+        from urllib.parse import unquote
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            if length <= 0:
+                self._json({'ok': False, 'error': 'empty upload'}); return
+            raw_name = self.headers.get('X-Filename', '') or 'vehicle.json'
+            try: raw_name = unquote(raw_name)
+            except Exception: pass
+            safe = ''.join(c for c in os.path.basename(raw_name) if c.isalnum() or c in '._- ').strip(' .')
+            if not safe:
+                safe = 'vehicle.json'
+            if not safe.lower().endswith('.json'):
+                safe += '.json'
+            d = self._vehicle_json_dir()
+            os.makedirs(d, exist_ok=True)
+            data = self.rfile.read(length)
+            # Overwrite same-named config (re-importing shouldn't pile up copies).
+            with open(os.path.join(d, safe), 'wb') as f:
+                f.write(data)
+            self._json({'ok': True, 'name': safe})
+        except Exception as e:
+            try: self._json({'ok': False, 'error': str(e)})
+            except Exception: pass
+
     def _handle_traj_export(self, body: bytes):
         """Open a native Save-As dialog and write the trajectory JSON to disk."""
         from config import config
@@ -684,6 +814,36 @@ class Handler(BaseHTTPRequestHandler):
             self._json({'path': picked or '', 'data_dir': config.data_dir})
         except Exception as e:
             self._json({'path': '', 'error': str(e)})
+
+    def _handle_calibration_pick_dir(self, params):
+        init_dir = params.get('dir', [''])[0]
+        purpose = params.get('purpose', ['images'])[0]
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)
+            title = 'Select Camera Capture Folder' if purpose == 'capture' else 'Select Checkerboard Image Folder'
+            # Windows remembers the last folder when initialdir is omitted,
+            # which makes a previous calibration folder look like a default.
+            # Start the first selection at the current drive root instead.
+            dialog_options = {
+                'title': title,
+                'initialdir': init_dir or os.path.abspath(os.sep),
+            }
+            picked = filedialog.askdirectory(**dialog_options)
+            root.destroy()
+            self._json({'path': os.path.normpath(picked) if picked else ''})
+        except Exception as e:
+            self._json({'path': '', 'error': str(e)})
+
+    def _handle_calibration_preview(self, params):
+        folder = os.path.realpath(params.get('dir', [''])[0])
+        filename = os.path.basename(params.get('file', [''])[0])
+        full = os.path.realpath(os.path.join(folder, filename))
+        if not filename or not full.startswith(folder + os.sep) or not os.path.isfile(full):
+            self.send_error(404); return
+        with open(full, 'rb') as f:
+            self._binary(f.read(), 'image/jpeg')
 
     def _handle_set_dir(self, params):
         from config import config

@@ -41,6 +41,7 @@
     <button class="mode-tab active" id="tab-pcd" onclick="switchMode('pcd')">&#9729; Lidar</button>
     <button class="mode-tab" id="tab-cam" onclick="switchMode('cam')">&#128247; Camera</button>
     <button class="mode-tab" id="tab-fusion" onclick="switchMode('fusion')">&#128279; Fusion</button>
+    <button class="mode-tab" id="tab-calibration" onclick="switchMode('calibration')">&#127919; Calib</button>
     <button class="mode-tab" id="tab-gs"  onclick="switchMode('gs')">&#127875; 3DGS</button>
   </div>
   <div id="sidebar-scroll">
@@ -178,6 +179,9 @@
                 onclick="document.getElementById('fusion-json-file').click()">
           &#128194; Import Main Vehicle JSON
         </button>
+        <select id="fusion-json-select" class="full" style="margin-top:6px" onchange="fusionLoadSavedJson(this.value)">
+          <option value="">&#8212; saved vehicle JSON &#8212;</option>
+        </select>
         <div id="fusion-json-name" class="fusion-hint">No vehicle JSON imported</div>
         <div class="fusion-picker-grid">
           <label>Camera
@@ -205,6 +209,41 @@
         </div>
         <button class="btn full-w" id="fusion-start-btn" onclick="fusionStart()">&#128279; Apply &amp; Start Fusion</button>
         <div id="fusion-run-status" class="fusion-hint">off</div>
+      </div>
+    </details>
+  </div>
+  <div id="sec-calibration" style="display:none">
+    <details open>
+      <summary>&#127919; Offline Camera Calibration</summary>
+      <div class="sec calibration-form">
+        <div class="grp">
+          <button class="btn ghost full-w" onclick="calibPickFolder('images')">&#128194; Select Image Folder…</button>
+          <div id="calib-image-dir" class="calib-path" style="display:none"></div>
+        </div>
+        <label>Target Type<select id="calib-target"><option value="checkerboard">Checkerboard</option></select></label>
+        <label>Camera Model<select id="calib-camera-type"><option value="" selected>Select Camera Model…</option><option value="normal5">Standard Camera (5 Parameters)</option><option value="normal8">Standard Camera (8 Parameters)</option><option value="fisheye">Fisheye Camera</option></select></label>
+        <div class="grid2">
+          <label>Rows (Squares)<input id="calib-rows" type="number" value="15" min="3" step="1"></label>
+          <label>Columns (Squares)<input id="calib-cols" type="number" value="20" min="3" step="1"></label>
+          <label>Square Size [mm]<input id="calib-square" type="number" value="100" min="0.01" step="0.01"></label>
+          <label>Minimum Images<input id="calib-min-images" type="number" value="5" min="3" step="1"></label>
+        </div>
+        <button class="btn full-w" id="calib-run-btn" onclick="calibRun()">Start Offline Calibration</button>
+        <div id="calib-status" class="calib-status">Waiting for an image folder</div>
+        <pre id="calib-result" class="calib-result" style="display:none"></pre>
+      </div>
+    </details>
+    <details>
+      <summary>&#128247; Camera Image Capture</summary>
+      <div class="sec calibration-form">
+        <div id="calib-capture-dir" class="calib-path" style="display:none"></div>
+        <div class="grid2">
+          <label>UDP Listen IP<input id="calib-udp-host" type="text" value="127.0.0.1"></label>
+          <label>UDP Port<input id="calib-udp-port" type="number" value="13956" min="1" max="65535"></label>
+        </div>
+        <div class="grid3"><button class="btn" id="calib-receive-btn" onclick="calibCaptureStart()">Start Receiver</button><button class="btn ghost" onclick="calibCaptureSave()">Capture Image</button><button class="btn danger" onclick="calibCaptureStop()">Stop Receiver</button></div>
+        <div class="grid2"><button class="btn" id="calib-auto-btn" onclick="calibAutoCaptureStart()">Start Auto Capture</button><button class="btn danger" onclick="calibAutoCaptureStop()">Stop Auto Capture</button></div>
+        <div id="calib-capture-status" class="calib-status">off</div>
       </div>
     </details>
   </div>
@@ -463,6 +502,11 @@
       </div>
       <img id="fusion-img" alt="Fusion calibration" style="width:100%;height:100%;object-fit:contain;display:none">
       <div id="fusion-badge"></div>
+    </div>
+    <div id="calibration-wrap">
+      <div id="calib-empty" class="fusion-empty"><span style="font-size:2.5rem">&#127919;</span><span>Select checkerboard images from multiple viewpoints or use local camera capture</span></div>
+      <img id="calib-preview" alt="Calibration preview">
+      <div id="calib-preview-label"></div>
     </div>
   <div id="overlay" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;pointer-events:none">
     <span style="font-size:2.5rem">&#9729;</span>

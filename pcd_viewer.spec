@@ -97,6 +97,7 @@ a = Analysis(
         'numpy',
         'cv2',
         'model.fusion_model',
+        'model.calibration_model',
         'tkinter',
         'tkinter.filedialog',
         # pythonnet/clr — pywebview WinForms backend (Windows)
