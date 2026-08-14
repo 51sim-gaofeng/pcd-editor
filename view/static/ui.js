@@ -941,7 +941,7 @@ refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();_init
 // 鈹€鈹€ Camera mode (GVSP UDP receiver) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 const _CAM_PCD_SECTIONS=['sec-file','sec-play','sec-streaming','sec-dds'];
 let _camMode=false,_camActive=false,_camLastId=-1,_camSourceFrameId=-1,_camDisplayFrameId=-1;
-let _fusionMode=false,_fusionVehicleJson=null,_fusionSensors=[];
+let _fusionMode=false,_calibrationMode=false,_fusionVehicleJson=null,_fusionSensors=[];
 let _fusionActive=false,_fusionLastSequence=-1,_fusionAbort=null,_fusionBlobUrl=null,_fusionPrevColorMode=null;
 let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0,_camLastBuf=null;
 let _camShowFps=true;
@@ -1053,11 +1053,13 @@ async function _camDrainFrames(){
 function switchMode(mode){
   const toCam=mode==='cam';
   const toFusion=mode==='fusion';
+  const toCalibration=mode==='calibration';
   const toGs=mode==='gs';
-  const toPcd=!toCam&&!toFusion&&!toGs;
-  if(_camMode===toCam&&_fusionMode===toFusion&&!toGs){if(!toPcd)return;}
+  const toPcd=!toCam&&!toFusion&&!toCalibration&&!toGs;
+  if(_camMode===toCam&&_fusionMode===toFusion&&_calibrationMode===toCalibration&&!toGs){if(!toPcd)return;}
   _camMode=toCam;
   _fusionMode=toFusion;
+  _calibrationMode=toCalibration;
   if(!toFusion&&_fusionActive)fusionStop();
   // Fusion defaults to Intensity color; remember the prior mode to restore on exit.
   const _cmSel=document.getElementById('color-mode');
@@ -1071,26 +1073,30 @@ function switchMode(mode){
   document.getElementById('tab-pcd').classList.toggle('active',toPcd);
   document.getElementById('tab-cam').classList.toggle('active',toCam);
   document.getElementById('tab-fusion').classList.toggle('active',toFusion);
+  document.getElementById('tab-calibration')?.classList.toggle('active',toCalibration);
   const tabGs=document.getElementById('tab-gs');if(tabGs)tabGs.classList.toggle('active',toGs);
-  _CAM_PCD_SECTIONS.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion||toGs)?'none':'';});
+  _CAM_PCD_SECTIONS.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion||toCalibration||toGs)?'none':'';});
   // View/Edit Cloud/Trajectory toolbar also works in 3DGS mode (same camera/scene),
   // just not in Camera mode (no 3D scene there at all).
-  const vpToolbar=document.getElementById('viewport-toolbar');if(vpToolbar)vpToolbar.style.display=toCam?'none':'';
-  if(toCam)closeViewportPanel();
-  if(toCam||toFusion||toGs){
+  const vpToolbar=document.getElementById('viewport-toolbar');if(vpToolbar)vpToolbar.style.display=(toCam||toCalibration)?'none':'';
+  if(toCam||toCalibration)closeViewportPanel();
+  if(toCam||toFusion||toCalibration||toGs){
     _stopPlay();               // stop PCD playback loop so it can't keep re-adding the cloud
     if(_smActive)streamingStop();
     if(_ddsActive)ddsStop();
   }
   const secCam=document.getElementById('sec-camera');if(secCam)secCam.style.display=toCam?'':'none';
   const secFusion=document.getElementById('sec-fusion');if(secFusion)secFusion.style.display=toFusion?'':'none';
+  const secCalibration=document.getElementById('sec-calibration');if(secCalibration)secCalibration.style.display=toCalibration?'':'none';
   if(toFusion)_fusionRefreshJsonList(document.getElementById('fusion-json-select')?.value||'');
   const secGs=document.getElementById('sec-gs');if(secGs)secGs.style.display=toGs?'':'none';
   const camWrap=document.getElementById('camera-wrap');if(camWrap)camWrap.classList.toggle('active',toCam);
   const fusionWrap=document.getElementById('fusion-wrap');if(fusionWrap)fusionWrap.classList.toggle('active',toFusion);
-  ['cv','lasso-canvas'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion)?'none':'';});
-  const axesLabel=document.getElementById('axes-label');if(axesLabel)axesLabel.style.display=(toCam||toFusion)?'none':'';
-  const ovl=document.getElementById('overlay');if(ovl)ovl.style.display=(toCam||toFusion||toGs)?'none':'';
+  const calibrationWrap=document.getElementById('calibration-wrap');if(calibrationWrap)calibrationWrap.classList.toggle('active',toCalibration);
+  if(!toCalibration)calibCaptureStop(true);
+  ['cv','lasso-canvas'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion||toCalibration)?'none':'';});
+  const axesLabel=document.getElementById('axes-label');if(axesLabel)axesLabel.style.display=(toCam||toFusion||toCalibration)?'none':'';
+  const ovl=document.getElementById('overlay');if(ovl)ovl.style.display=(toCam||toFusion||toCalibration||toGs)?'none':'';
   const ovlText=ovl?.querySelector('span:last-child');if(ovlText)ovlText.textContent=toGs?'':'Select a PCD file';
   setGsOverlay(toGs?'idle':'hidden');
   if(!toCam){
@@ -1111,6 +1117,98 @@ function switchMode(mode){
     window._three?.setSceneAxesVisible?.(true);
   }
   if(!toGs&&window._gaussian){window._gaussian.dispose();}
+}
+
+let _calibImageDir='',_calibImageDirSelected=false,_calibCaptureDir='',_calibCaptureTimer=null,_calibAutoStatusTimer=null;
+async function calibPickFolder(purpose){
+  const current=purpose==='capture'?_calibCaptureDir:_calibImageDir;
+  const r=await fetch('/api/calibration_pick_dir?purpose='+purpose+'&dir='+encodeURIComponent(current||''));
+  const d=await r.json(); if(d.error){calibSetStatus(d.error,true);return false;} if(!d.path)return false;
+  if(purpose==='capture'){
+    _calibCaptureDir=d.path;document.getElementById('calib-capture-dir').textContent=d.path;document.getElementById('calib-capture-dir').style.display='';
+    document.getElementById('calib-capture-status').textContent='Save folder selected';
+  }else{
+    _calibImageDir=d.path;_calibImageDirSelected=true;document.getElementById('calib-image-dir').textContent=d.path;document.getElementById('calib-image-dir').style.display='';calibSetStatus('Image folder selected');
+  }
+  return true;
+}
+function calibSetStatus(text,error=false){const el=document.getElementById('calib-status');if(el){el.textContent=text;el.classList.toggle('error',error);}}
+async function calibRun(){
+  const model=document.getElementById('calib-camera-type').value;
+  if(!model){calibSetStatus('Select a camera model before calibration.',true);return;}
+  if(!_calibImageDirSelected&&!await calibPickFolder('images'))return;
+  const btn=document.getElementById('calib-run-btn');btn.disabled=true;btn.textContent='Detecting corners and calibrating…';calibSetStatus('Processing, please wait');
+  const payload={folder:_calibImageDir,output_dir:_calibImageDir,model,
+    rows:+document.getElementById('calib-rows').value,cols:+document.getElementById('calib-cols').value,
+    square_mm:+document.getElementById('calib-square').value,min_images:+document.getElementById('calib-min-images').value};
+  try{
+    const d=await (await fetch('/api/calibration_run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json();
+    if(!d.ok)throw new Error(d.error||'Calibration failed');
+    const coeffNames=d.model.startsWith('fisheye')?['k1','k2','k3','k4']:['k1','k2','p1','p2','k3','k4','k5','k6'];
+    const coeff=d.distortion_coefficients.map((v,i)=>`${coeffNames[i]} = ${Number(v).toPrecision(10)}`).join('\n');
+    const fx=d.camera_matrix[0][0],fy=d.camera_matrix[1][1],cx=d.camera_matrix[0][2],cy=d.camera_matrix[1][2];
+    const offsetCx=cx-d.image_size[0]/2,offsetCy=cy-d.image_size[1]/2;
+    const warnings=(d.diagnostics?.warnings||[]).map(x=>'Warning: '+x).join('\n');
+    const metric=d.display_reprojection||{value_px:d.mean_reprojection_error,source:'estimated_pose',file:null};
+    const isReference=metric.source==='reference_pose';
+    const metricLabel=metric.label||(isReference?'Single-Image Reprojection RMS (Reference Pose)':'Single-Image Reprojection RMS (Estimated Extrinsics)');
+    const metricNote=metric.note||(isReference?'Uses the distance encoded in the filename and assumes the board is centered and perpendicular to the optical axis.':'No valid named preview image was found; uses the first valid image and its estimated extrinsics.');
+    const metricFile=metric.file?`\nValidation Image: ${metric.file}`:'';
+    const meanPixelError=Number(metric.mean_pixel_error_px);
+    const meanPixelLine=Number.isFinite(meanPixelError)?`\nMean Pixel Error: ${meanPixelError.toFixed(6)} px`:'';
+    const relativeDistanceError=Number(metric.distance_relative_error_percent);
+    const distanceLines=Number.isFinite(relativeDistanceError)?`\nRelative Distance Error: ${relativeDistanceError.toFixed(6)} %`:'';
+    const reprojectionMetrics=`${metricLabel}: ${Number(metric.value_px).toFixed(6)} px${meanPixelLine}${distanceLines}${metricFile}`;
+    const out=`Model: ${d.model}\nValid Images: ${d.valid_images.length} / ${d.valid_images.length+d.rejected_images.length}${warnings?'\n'+warnings:''}\n\nFocal Length Fx = ${fx.toFixed(6)}\nFocal Length Fy = ${fy.toFixed(6)}\nPrincipal Point cx (absolute pixel) = ${cx.toFixed(6)}\nPrincipal Point cy (absolute pixel) = ${cy.toFixed(6)}\nCenter Offset Cx = ${offsetCx.toFixed(6)}\nCenter Offset Cy = ${offsetCy.toFixed(6)}\n\nDistortion Coefficients D:\n${coeff}\n\n${reprojectionMetrics}\n\nNote: ${metricNote}\n\nReprojection Image: ${d.reprojection_file}\nResult: ${d.json_file}`;
+    const result=document.getElementById('calib-result');result.textContent=out;result.style.display='block';
+    calibSetStatus('Calibration complete. JSON, NPY, and preview files were saved to the image folder.');calibShowPreview(d.undistorted_url,'Undistortion Preview');
+  }catch(e){calibSetStatus(e.message,true);}finally{btn.disabled=false;btn.textContent='Start Offline Calibration';}
+}
+function calibShowPreview(url,label){
+  const img=document.getElementById('calib-preview'),empty=document.getElementById('calib-empty');
+  img.src=url+(url.includes('?')?'&':'?')+'_t='+Date.now();img.style.display='block';empty.style.display='none';
+  document.getElementById('calib-preview-label').textContent=label;
+}
+async function calibCaptureStart(){
+  const payload={host:document.getElementById('calib-udp-host').value.trim()||'127.0.0.1',port:+document.getElementById('calib-udp-port').value};
+  const d=await (await fetch('/api/calibration_capture_start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json();
+  if(!d.ok){document.getElementById('calib-capture-status').textContent=d.error;return;}
+  document.getElementById('calib-capture-status').textContent='UDP receiver started · Waiting for image stream';
+  document.getElementById('calib-receive-btn').textContent='Restart Receiver';
+  clearInterval(_calibCaptureTimer);_calibCaptureTimer=setInterval(()=>calibShowPreview('/api/calibration_capture_frame','Live Camera Feed'),120);
+}
+async function calibCaptureSave(){
+  if(!await calibPickFolder('capture'))return;
+  const d=await (await fetch('/api/calibration_capture_save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:_calibCaptureDir})})).json();
+  document.getElementById('calib-capture-status').textContent=d.ok?'Saved: '+d.file:(d.error||'Save failed');
+}
+async function calibAutoCaptureStart(){
+  if(!await calibPickFolder('capture'))return;
+  const d=await (await fetch('/api/calibration_auto_capture_start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:_calibCaptureDir})})).json();
+  const el=document.getElementById('calib-capture-status');
+  if(!d.ok){el.textContent=d.error||'Failed to start auto capture';return;}
+  document.getElementById('calib-auto-btn').disabled=true;
+  el.textContent='Auto capture running · 0 images saved';
+  clearInterval(_calibAutoStatusTimer);_calibAutoStatusTimer=setInterval(async()=>{
+    try{
+      const s=await (await fetch('/api/calibration_capture_status')).json();
+      el.textContent=s.auto_error?'Auto capture stopped: '+s.auto_error:(s.auto_capture?'Auto capture running · '+s.auto_saved+' images saved':'Auto capture stopped · '+s.auto_saved+' images saved');
+      if(!s.auto_capture){clearInterval(_calibAutoStatusTimer);_calibAutoStatusTimer=null;document.getElementById('calib-auto-btn').disabled=false;}
+    }catch(_e){}
+  },500);
+}
+async function calibAutoCaptureStop(silent=false){
+  clearInterval(_calibAutoStatusTimer);_calibAutoStatusTimer=null;
+  let d={};try{d=await (await fetch('/api/calibration_auto_capture_stop',{method:'POST'})).json();}catch(_e){}
+  const btn=document.getElementById('calib-auto-btn');if(btn)btn.disabled=false;
+  if(!silent){const el=document.getElementById('calib-capture-status');if(el)el.textContent='Auto capture stopped · '+(d.auto_saved||0)+' images saved';}
+}
+async function calibCaptureStop(silent=false){
+  await calibAutoCaptureStop(true);
+  clearInterval(_calibCaptureTimer);_calibCaptureTimer=null;
+  try{await fetch('/api/calibration_capture_stop',{method:'POST'});}catch(_e){}
+  const btn=document.getElementById('calib-receive-btn');if(btn)btn.textContent='Start Receiver';
+  if(!silent){const el=document.getElementById('calib-capture-status');if(el)el.textContent='UDP receiver stopped';}
 }
 
 function _fusionWalkSensors(value,path='',out=[]){

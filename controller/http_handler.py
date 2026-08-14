@@ -206,6 +206,22 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/pick_dir':
             self._handle_pick_dir(params)
 
+        elif path == '/api/calibration_pick_dir':
+            self._handle_calibration_pick_dir(params)
+
+        elif path == '/api/calibration_preview':
+            self._handle_calibration_preview(params)
+
+        elif path == '/api/calibration_capture_frame':
+            from model.calibration_model import capture_jpeg
+            jpeg = capture_jpeg()
+            if jpeg: self._binary(jpeg, 'image/jpeg')
+            else: self.send_error(404)
+
+        elif path == '/api/calibration_capture_status':
+            from model.calibration_model import capture_status
+            self._json(capture_status())
+
         elif path == '/api/set_dir':
             self._handle_set_dir(params)
 
@@ -429,6 +445,44 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(configure(data.get('camera') or {}, data.get('lidar') or {}))
             except Exception as e:
                 self._json({'ok': False, 'error': str(e)})
+        elif parsed.path == '/api/calibration_run':
+            try:
+                data = json.loads(body or b'{}')
+                from model.calibration_model import calibrate
+                self._json({'ok': True, **calibrate(
+                    data.get('folder', ''), data.get('rows', 0), data.get('cols', 0),
+                    data.get('square_mm', 0), data.get('model', 'normal5'),
+                    data.get('min_images', 5), data.get('output_dir') or data.get('folder', ''))})
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
+        elif parsed.path == '/api/calibration_capture_start':
+            try:
+                data = json.loads(body or b'{}')
+                from model.calibration_model import start_capture
+                self._json({'ok': True, **start_capture(data.get('folder', ''),
+                    data.get('host', '127.0.0.1'), data.get('port', 13956))})
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
+        elif parsed.path == '/api/calibration_capture_save':
+            try:
+                data = json.loads(body or b'{}')
+                from model.calibration_model import save_capture
+                self._json(save_capture(data.get('folder', '')))
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
+        elif parsed.path == '/api/calibration_auto_capture_start':
+            try:
+                data = json.loads(body or b'{}')
+                from model.calibration_model import start_auto_capture
+                self._json({'ok': True, **start_auto_capture(data.get('folder', ''))})
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)})
+        elif parsed.path == '/api/calibration_auto_capture_stop':
+            from model.calibration_model import stop_auto_capture
+            self._json({'ok': True, **stop_auto_capture()})
+        elif parsed.path == '/api/calibration_capture_stop':
+            from model.calibration_model import stop_capture
+            self._json({'ok': True, **stop_capture()})
         else:
             self.send_error(404)
 
@@ -760,6 +814,36 @@ class Handler(BaseHTTPRequestHandler):
             self._json({'path': picked or '', 'data_dir': config.data_dir})
         except Exception as e:
             self._json({'path': '', 'error': str(e)})
+
+    def _handle_calibration_pick_dir(self, params):
+        init_dir = params.get('dir', [''])[0]
+        purpose = params.get('purpose', ['images'])[0]
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)
+            title = 'Select Camera Capture Folder' if purpose == 'capture' else 'Select Checkerboard Image Folder'
+            # Windows remembers the last folder when initialdir is omitted,
+            # which makes a previous calibration folder look like a default.
+            # Start the first selection at the current drive root instead.
+            dialog_options = {
+                'title': title,
+                'initialdir': init_dir or os.path.abspath(os.sep),
+            }
+            picked = filedialog.askdirectory(**dialog_options)
+            root.destroy()
+            self._json({'path': os.path.normpath(picked) if picked else ''})
+        except Exception as e:
+            self._json({'path': '', 'error': str(e)})
+
+    def _handle_calibration_preview(self, params):
+        folder = os.path.realpath(params.get('dir', [''])[0])
+        filename = os.path.basename(params.get('file', [''])[0])
+        full = os.path.realpath(os.path.join(folder, filename))
+        if not filename or not full.startswith(folder + os.sep) or not os.path.isfile(full):
+            self.send_error(404); return
+        with open(full, 'rb') as f:
+            self._binary(f.read(), 'image/jpeg')
 
     def _handle_set_dir(self, params):
         from config import config

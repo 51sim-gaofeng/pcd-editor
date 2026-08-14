@@ -54,6 +54,7 @@ _REASSEMBLY_TTL = 1.0
 _REASSEMBLY_MAX = 32
 
 _cam_fusion_frames = deque(maxlen=60)
+_frame_listeners: set = set()
 
 
 def _gc_reassembly(now: float) -> None:
@@ -145,7 +146,25 @@ def _process_gvsp_packet(data: bytes) -> None:
                 'block_id': _cam_block_id,
                 'jpeg': jpeg_ready,
             })
+            listeners = tuple(_frame_listeners)
             _cam_cond.notify_all()
+        # Listener callbacks must stay lightweight so UDP reassembly never waits
+        # for disk I/O. Calib's callback only enqueues the immutable JPEG bytes.
+        for callback in listeners:
+            try:
+                callback(_cam_frame_id, _cam_source_frame_id, jpeg_ready)
+            except Exception:
+                pass
+
+
+def add_frame_listener(callback) -> None:
+    with _cam_lock:
+        _frame_listeners.add(callback)
+
+
+def remove_frame_listener(callback) -> None:
+    with _cam_lock:
+        _frame_listeners.discard(callback)
 
 
 def _udp_listener_thread(

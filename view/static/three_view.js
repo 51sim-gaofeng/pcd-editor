@@ -643,7 +643,7 @@ canvas.addEventListener('click',e=>{
   if(hit){addWaypoint(hit.x,hit.y,wpZ);}
 });
 
-function heightColor(t){const c=[[0.1,0.1,0.8],[0.0,0.8,0.8],[0.0,0.9,0.1],[0.9,0.9,0.0],[0.9,0.1,0.1]];const s=Math.max(0,Math.min(1,t))*(c.length-1);const lo=Math.floor(s),hi=Math.min(c.length-1,lo+1),f=s-lo;return[c[lo][0]+(c[hi][0]-c[lo][0])*f,c[lo][1]+(c[hi][1]-c[lo][1])*f,c[lo][2]+(c[hi][2]-c[lo][2])*f];}
+function heightColor(t){const c=[[0.1,0.1,0.8],[0.0,0.8,0.8],[0.0,0.9,0.1],[0.9,0.9,0.0],[0.9,0.1,0.1]];t=t>0?(t<1?t:1):0;/* NaN-safe clamp: NaN>0 is false -> 0, avoids c[NaN] undefined crash */const s=t*(c.length-1);const lo=Math.floor(s),hi=Math.min(c.length-1,lo+1),f=s-lo;return[c[lo][0]+(c[hi][0]-c[lo][0])*f,c[lo][1]+(c[hi][1]-c[lo][1])*f,c[lo][2]+(c[hi][2]-c[lo][2])*f];}
 function getFilt(){return filterActive?{active:true,zMin:filterZMin,zMax:filterZMax,mode:filterMode}:null;}
 // buildPointCloud works directly on Float32Array (stride=nfields) for JIT-friendly access
 function buildPointCloud(floats,nfields,fields,mode,filt){
