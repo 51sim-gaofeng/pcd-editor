@@ -6,7 +6,7 @@ import argparse
 import subprocess
 
 APP_NAME = '51sim Sensor Data Viewer'
-APP_VERSION = '0.8.1'
+APP_VERSION = '0.9'
 
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 _app_info_cache = None
@@ -95,6 +95,25 @@ def _load_last_dir() -> str:
     """Return the last-used directory, or '' if not saved."""
     path = _read_state().get('last_dir', '')
     return path if path and os.path.isdir(path) else ''
+
+
+def list_calib_image_dirs() -> list:
+    """Return remembered calibration image folders (most recent first, existing only)."""
+    dirs = _read_state().get('calib_image_dirs', [])
+    return [d for d in dirs if isinstance(d, str) and os.path.isdir(d)]
+
+
+def add_calib_image_dir(path: str, limit: int = 20) -> list:
+    """Remember a calibration image folder; dedupe, most-recent-first, capped."""
+    if not path or not os.path.isdir(path):
+        return list_calib_image_dirs()
+    path = os.path.normpath(path)
+    dirs = [d for d in _read_state().get('calib_image_dirs', [])
+            if isinstance(d, str) and os.path.normpath(d) != path]
+    dirs.insert(0, path)
+    dirs = dirs[:limit]
+    _write_state({'calib_image_dirs': dirs})
+    return [d for d in dirs if os.path.isdir(d)]
 
 
 def get_welcome_pref() -> bool:

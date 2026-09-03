@@ -91,6 +91,7 @@ def configure(camera: dict, lidar: dict) -> dict:
     params = camera.get('params') or camera
     intr = camera.get('intrinsics') or params.get('intrinsics') or params.get('distortion') or {}
     derived = intr.get('derived_opencv_values') or intr
+    fisheye = params.get('fisheye') or camera.get('fisheye') or {}
     width = int(_value(params, 'resolutionWidth', 'capture.image_width_px', default=1920))
     height = int(_value(params, 'resolutionHeight', 'capture.image_height_px', default=1080))
     matrix = derived.get('camera_matrix')
@@ -119,6 +120,25 @@ def configure(camera: dict, lidar: dict) -> dict:
                       _value(intr,'p1','P1'), _value(intr,'p2','P2'),
                       _value(intr,'k3','K3'), _value(intr,'k4','K4'),
                       _value(intr,'k5','K5'), _value(intr,'k6','K6')]
+    projection_model = 'ftheta' if camera.get('_fusion_projection') == 'ftheta' else 'pinhole'
+    ftheta_poly = None
+    if projection_model == 'ftheta':
+        # SimOne's Polynomial model stores the angle-to-pixel-radius mapping as
+        #   r(theta) = p0 + focalLengthX*theta + p1*theta^2 + ... + p4*theta^5.
+        # The p* terms are not OpenCV radial coefficients and must not be passed
+        # to cv2.projectPoints.
+        polynomial = fisheye.get('Polynomial') or fisheye.get('polynomial') or {}
+        focal = float(_value(derived, 'fx_px', 'focalLengthX', default=matrix[0][0]))
+        ftheta_poly = np.asarray(
+            [float(_value(polynomial, 'p0', default=0.0)), focal]
+            + [float(_value(polynomial, f'p{i}', default=0.0)) for i in range(1, 5)],
+            np.float64,
+        )
+    if projection_model != 'ftheta' and str(fisheye.get('model') or '').strip().lower() == 'opencv':
+        fish = fisheye.get('OpenCV') or fisheye.get('opencv') or {}
+        distortion = [_value(fish, 'k1', 'K1'), _value(fish, 'k2', 'K2'),
+                      _value(fish, 'k3', 'K3'), _value(fish, 'k4', 'K4')]
+        projection_model = 'fisheye_opencv'
     camera_t, camera_r = _pose(camera)
     lidar_t, lidar_r = _pose(lidar)
     # display3d.py: vehicle/LiDAR X-forward,Y-left,Z-up -> camera optical
@@ -129,10 +149,13 @@ def configure(camera: dict, lidar: dict) -> dict:
     with _lock:
         _config = {'camera_matrix': np.asarray(matrix, np.float64),
                    'distortion': np.asarray(distortion, np.float64),
+                   'ftheta_poly': ftheta_poly,
+                   'projection_model': projection_model,
                    'transform': transform, 'width': width, 'height': height}
         _last_lidar_fid = None
     _ensure_worker()
-    return {'ok': True, 'camera_matrix': matrix,
+    return {'ok': True, 'camera_matrix': matrix, 'projection_model': projection_model,
+            'ftheta_poly': None if ftheta_poly is None else ftheta_poly.tolist(),
             'T_camera_optical_from_lidar': transform.tolist()}
 
 
@@ -178,9 +201,35 @@ def _render(camera: dict, lidar: dict, cfg: dict, opts: dict):
     optical = (cfg['transform'] @ xyz1.T).T[:,:3]
     mask = optical[:,2] > 0
     optical, source = optical[mask], points[mask]
-    projected, _ = cv2.projectPoints(optical.astype(np.float32), np.zeros(3), np.zeros(3),
-                                     cfg['camera_matrix'], cfg['distortion'])
-    pixels = projected.reshape(-1,2).astype(np.int32)
+    if len(optical):
+        if cfg.get('projection_model') == 'ftheta':
+            # Polynomial F-Theta projection from cameramodel-main.  atan2 is
+            # stable both on-axis and near 90 degrees and is equivalent to the
+            # reference implementation's acos(z / ||ray||).
+            xy_radius = np.hypot(optical[:, 0], optical[:, 1])
+            theta = np.arctan2(xy_radius, optical[:, 2])
+            coeffs = cfg.get('ftheta_poly')
+            if coeffs is None:
+                coeffs = np.array([0.0, cfg['camera_matrix'][0, 0]], np.float64)
+            radius = np.polynomial.polynomial.polyval(theta, coeffs)
+            scale = np.divide(radius, xy_radius, out=np.zeros_like(radius), where=xy_radius > 1e-12)
+            k = cfg['camera_matrix']
+            pixels_float = np.column_stack((
+                k[0, 2] + scale * optical[:, 0],
+                k[1, 2] + scale * optical[:, 1],
+            ))
+            projected = pixels_float.reshape(-1, 1, 2)
+        elif cfg.get('projection_model') == 'fisheye_opencv':
+            projected, _ = cv2.fisheye.projectPoints(
+                optical.astype(np.float64).reshape(-1, 1, 3),
+                np.zeros((3, 1), np.float64), np.zeros((3, 1), np.float64),
+                cfg['camera_matrix'], cfg['distortion'].reshape(4, 1))
+        else:
+            projected, _ = cv2.projectPoints(optical.astype(np.float32), np.zeros(3), np.zeros(3),
+                                             cfg['camera_matrix'], cfg['distortion'])
+        pixels = projected.reshape(-1,2).astype(np.int32)
+    else:
+        pixels = np.empty((0, 2), dtype=np.int32)
     valid = ((pixels[:,0]>=0)&(pixels[:,0]<image.shape[1])&
              (pixels[:,1]>=0)&(pixels[:,1]<image.shape[0]))
     pixels, source = pixels[valid], source[valid]
@@ -201,6 +250,20 @@ def _render(camera: dict, lidar: dict, cfg: dict, opts: dict):
     if not ok:
         raise ValueError('fusion JPEG encode failed')
     return encoded.tobytes(), len(pixels)
+
+
+def render_offline(image_bytes: bytes, points) -> tuple[bytes, dict]:
+    """Render one locally supplied image/point-cloud pair with current calibration."""
+    with _lock:
+        cfg = copy.deepcopy(_config)
+        opts = dict(_render_opts)
+    if not cfg:
+        raise ValueError('fusion calibration is not configured')
+    array = np.asarray(points, np.float64)
+    if array.ndim != 2 or array.shape[1] < 3:
+        raise ValueError('PCD must contain x, y and z fields')
+    jpeg, projected = _render({'jpeg': image_bytes}, {'points': array}, cfg, opts)
+    return jpeg, {'projected_points': projected}
 
 
 def _circular_ms_diff(a: int, b: int, wrap: int = 65536) -> int:

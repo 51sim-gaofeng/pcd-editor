@@ -100,11 +100,11 @@ jobs:
       - name: Package binary + samples zip (Linux)
         if: runner.os == 'Linux'
         run: |
-          # staging/ contains: 51sim_sensor_viewer  +  sample/*.pcd/*.ply
-          mkdir -p staging/sample
+          # staging/ contains: 51sim_sensor_viewer + the full sample/ tree
+          # (point clouds, meshes, and calibration image sets)
+          mkdir -p staging
           cp dist/51sim_sensor_viewer staging/
-          cp sample/*.pcd staging/sample/
-          cp sample/*.ply staging/sample/
+          cp -r sample staging/sample
           cd staging
           zip -r ../dist/51sim_sensor_viewer-${{ github.ref_name }}-${{ matrix.platform }}-with-samples.zip .
           cd ..

@@ -1,6 +1,6 @@
 # 51sim Sensor Data Viewer
 
-Web-based sensor visualizer powered by Python (HTTP server) + Three.js (browser rendering). Supports **static `.pcd` files**, **live point clouds via UDP/DDS**, **real-time Lidar streams**, **camera imagery**, and **Gaussian Splatting** visualization.
+Web-based sensor visualizer powered by Python (HTTP server) + Three.js (browser rendering). Supports **static `.pcd` files**, **live point clouds via UDP/DDS**, **real-time Lidar streams**, **camera imagery**, **LiDAR-camera fusion**, **offline camera calibration**, and **Gaussian Splatting** visualization.
 
 ---
 
@@ -94,6 +94,25 @@ Open **http://localhost:9089** in your browser, or just launch the binary on Win
 - `LiDAR IP / port`, `DIFOP port`, `Camera port`: receiver endpoints (default `127.0.0.1`).
 - `Apply & Start / Stop Fusion`: start or stop the fused stream.
 - Overlay badge: `Camera <frame> · LiDAR <frame> · <N> projected pts` + render fps.
+
+### Camera Calibration (offline intrinsics)
+- Dedicated Calibration tab that solves camera **intrinsics K + distortion D** from a folder of checkerboard images.
+- **Camera models**: Standard 5-param, Standard 8-param (rational distortion model), and Fisheye.
+- **Live process visualization**: the solve runs in a background thread and the UI polls progress — per-frame checkerboard corner detection (✓/✗ with corner count or failure reason), solve stages (detect → solve → reproject → render), and a `detected N · X ✓ · Y ✗` summary. Views the solver auto-drops (degenerate pose / reprojection outlier) are listed separately with the reason.
+- **Frame playback**: after selecting an image folder, preview the images directly in the main panel with prev / next / play controls.
+- **Per-image corner + reprojection overlays**: once calibrated, each frame can toggle between `Raw` and `Corners + Reproj` — yellow crosses = detected corners, red circles = reprojected points, with a legend.
+- **Robust corner detection**: a cascade of image enhancements (CLAHE / denoise) × detectors (sector-based `findChessboardCornersSB` with multiple flags + the classic detector) markedly reduces false rejections where a usable board is present.
+- **Export intrinsics K + distortion D**: `Copy Params` (clipboard) and `Download JSON` (native Save-As dialog, `camera_KD_<model>_<timestamp>.json`) emit the standard OpenCV format (`camera_matrix` + `distortion_coefficients` + `rms`). The full result (diagnostics, per-image errors, `K.npy`/`D.npy`, corner/undistort previews) is also written to the image folder.
+- **Recent image folders**: previously used calibration folders are remembered in a persistent dropdown for quick re-selection.
+- **Sample data**: `sample/calibsamples/` ships three ready-to-use checkerboard sets (`fisheye` / `standard5` / `standard8`) and is bundled in the *with-samples* release archive.
+
+#### Calibration Tab controls
+- `Select Image Folder…` + `Recent image folders` dropdown: choose the checkerboard image directory.
+- `Camera Model`, board `Rows/Columns`, `Square Size [mm]`, `Minimum Images`: solve parameters.
+- `Start Offline Calibration`: run the solve (progress + per-frame status shown live).
+- Playback bar (`◀◀ / ▶ / ▶▶`, `Raw` / `Corners + Reproj`): step through frames and overlays.
+- `Copy Params` / `Download JSON`: export the intrinsics + distortion.
+- `Camera Image Capture`: optionally receive live GVSP frames over UDP and save them as calibration inputs.
 
 ### Gaussian Splatting (3DGS / PLY)
 - Dedicated GS mode for `.ply` assets with drag-and-drop upload and server-side file listing
@@ -257,6 +276,13 @@ All HTTP routing. Static files under `/static/*` are served from `view/static/`.
 | GET    | `/api/fusion_ensure`          | Start camera + LiDAR receivers for fusion |
 | GET    | `/api/fusion_render_options`  | Set projected-point size / color mode    |
 | POST   | `/api/fusion_config`          | Configure calibration from vehicle JSON  |
+| POST   | `/api/calibration_run`        | Start the offline calibration solve (async) |
+| GET    | `/api/calibration_progress`   | Poll live solve progress + per-frame status |
+| GET    | `/api/calibration_images`     | List checkerboard images in a folder     |
+| GET    | `/api/calibration_recent_dirs`| Remembered calibration image folders     |
+| GET    | `/api/calibration_preview`    | Serve a calibration input / overlay image |
+| GET    | `/api/calibration_pick_dir`   | Native OS folder picker for calibration  |
+| POST   | `/api/calibration_export`     | Save intrinsics K + distortion D (Save-As) |
 | GET    | `/api/vehicle_json_files`     | List cached main-vehicle JSONs           |
 | GET    | `/api/vehicle_json`           | Fetch a cached vehicle JSON by name      |
 | POST   | `/api/upload_vehicle_json`    | Save an imported vehicle JSON to cache   |
@@ -396,6 +422,15 @@ pip install pandas python-lzf
 ---
 
 ## Version Highlights
+
+### v0.9
+- Camera Calibration tab: offline intrinsics K + distortion D solve for Standard 5-param / 8-param (rational) / Fisheye models.
+- Live calibration process visualization (async solve + progress polling): per-frame corner detection, solve stages, detected/dropped summary with reasons.
+- Frame-by-frame image playback and per-image corner + reprojection overlays (yellow crosses = detected, red circles = reprojected) with legend.
+- Multi-strategy corner detection (CLAHE / denoise × sector-based + classic detectors) reduces false rejections.
+- Export intrinsics K + distortion D via `Copy Params` / `Download JSON` (standard OpenCV format); persistent recent-image-folder dropdown.
+- Bundled `sample/calibsamples/` checkerboard sets (fisheye / standard5 / standard8) in the with-samples archive.
+- Fix: calibration ↔ Fusion tab-switch crash on NaN point positions (`heightColor` NaN-safe clamp).
 
 ### v0.1.4.1
 - 3DGS pivot-aware rotation pipeline aligned between shader transform and depth-sort path.
