@@ -170,29 +170,61 @@
     </div>
   </details>
   <div id="sec-fusion" style="display:none">
-    <details open>
-      <summary>&#128663; Fusion Calibration</summary>
+    <details id="fusion-file-menu" open>
+      <summary>&#128194; Offline</summary>
+      <div class="sec">
+        <div class="fusion-import-row fusion-offline-import-row">
+          <button class="btn ghost" onclick="fusionPickOfflineDataset()">
+            &#128194; Import Dataset
+          </button>
+          <button class="btn ghost" onclick="document.getElementById('fusion-json-file').click()">Import JSON</button>
+          <input id="fusion-offline-json-ready" class="fusion-import-check" type="checkbox" disabled title="Offline dataset imported">
+        </div>
+        <div class="fusion-local-files">
+          <div class="fusion-source-column">
+            <div class="fusion-import-row fusion-local-import">
+              <button class="btn ghost" onclick="fusionPickLocalFolders('pcd')">&#9729; LiDAR Folder</button>
+              <input id="fusion-pcd-ready" class="fusion-import-check" type="checkbox" disabled title="LiDAR PCD sequence imported">
+            </div>
+            <select id="fusion-pcd-folder-select" class="full" onchange="fusionFolderSelectionChanged('pcd',this.value)">
+              <option value="">— select LiDAR folder —</option>
+            </select>
+          </div>
+          <div class="fusion-source-column">
+            <div class="fusion-import-row fusion-local-import">
+              <button class="btn ghost" onclick="fusionPickLocalFolders('image')">&#128247; Camera Folder</button>
+              <input id="fusion-image-ready" class="fusion-import-check" type="checkbox" disabled title="Camera image sequence imported">
+            </div>
+            <select id="fusion-image-folder-select" class="full" onchange="fusionFolderSelectionChanged('image',this.value)">
+              <option value="">— select Camera folder —</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn full-w" id="fusion-offline-start-btn" onclick="fusionOfflineStart()">&#9654; Start Offline Fusion</button>
+        <div id="fusion-offline-status" class="fusion-hint">off</div>
+      </div>
+    </details>
+    <details id="fusion-streaming-menu">
+      <summary>&#128225; Online</summary>
       <div class="sec">
         <input id="fusion-json-file" type="file" accept=".json,application/json"
                style="display:none" onchange="fusionImportVehicleJson(this.files[0])">
-        <button class="btn ghost full-w"
-                onclick="document.getElementById('fusion-json-file').click()">
-          &#128194; Import Main Vehicle JSON
-        </button>
+        <div class="fusion-import-row">
+          <button class="btn ghost" onclick="document.getElementById('fusion-json-file').click()">
+            &#128194; Import Main Vehicle JSON
+          </button>
+          <input id="fusion-json-ready" class="fusion-import-check" type="checkbox" disabled title="Vehicle JSON imported">
+        </div>
         <select id="fusion-json-select" class="full" style="margin-top:6px" onchange="fusionLoadSavedJson(this.value)">
           <option value="">&#8212; saved vehicle JSON &#8212;</option>
         </select>
-        <div id="fusion-json-name" class="fusion-hint">No vehicle JSON imported</div>
+        <div id="fusion-json-name" class="fusion-hint" style="display:none"></div>
         <div class="fusion-picker-grid">
           <label>Camera
-            <select id="fusion-camera-select" onchange="fusionSelectionChanged()">
-              <option value="">— select camera —</option>
-            </select>
+            <select id="fusion-camera-select" onchange="fusionSelectionChanged()"><option value="">— select camera —</option></select>
           </label>
           <label>LiDAR
-            <select id="fusion-lidar-select" onchange="fusionSelectionChanged()">
-              <option value="">— select lidar —</option>
-            </select>
+            <select id="fusion-lidar-select" onchange="fusionSelectionChanged()"><option value="">— select lidar —</option></select>
           </label>
         </div>
         <details id="fusion-parameters">

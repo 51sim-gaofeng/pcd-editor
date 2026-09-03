@@ -209,6 +209,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/calibration_pick_dir':
             self._handle_calibration_pick_dir(params)
 
+        elif path == '/api/fusion_pick_dirs':
+            self._handle_fusion_pick_dirs(params)
+
+        elif path == '/api/fusion_pick_dataset':
+            self._handle_fusion_pick_dataset(params)
+
         elif path == '/api/calibration_preview':
             self._handle_calibration_preview(params)
 
@@ -443,6 +449,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_upload_ply(); return
         if parsed.path == '/api/upload_vehicle_json':
             self._handle_upload_vehicle_json(); return
+        if parsed.path == '/api/fusion_offline_frame':
+            self._handle_fusion_offline_frame(parse_qs(parsed.query)); return
         length = int(self.headers.get('Content-Length', 0))
         body   = self.rfile.read(length)
         if parsed.path == '/api/trajectory':
@@ -460,6 +468,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(configure(data.get('camera') or {}, data.get('lidar') or {}))
             except Exception as e:
                 self._json({'ok': False, 'error': str(e)})
+        elif parsed.path == '/api/fusion_offline_paths':
+            self._handle_fusion_offline_paths(body)
         elif parsed.path == '/api/calibration_run':
             try:
                 data = json.loads(body or b'{}')
@@ -629,6 +639,7 @@ class Handler(BaseHTTPRequestHandler):
             rel_in   = self.headers.get('X-Relpath', '') or ''
             try: raw_name = unquote(raw_name)
             except Exception: pass
+
             try: rel_in   = unquote(rel_in)
             except Exception: pass
 
@@ -663,6 +674,93 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             try: self._json({'ok': False, 'error': str(e)})
             except Exception: pass
+
+    def _handle_fusion_offline_frame(self, params):
+        """Fuse one uploaded PCD with the image bytes in this request body."""
+        from config import config
+        try:
+            rel = params.get('pcd', [''])[0]
+            root = os.path.realpath(config.data_dir)
+            full = os.path.realpath(os.path.join(root, rel))
+            if not rel or os.path.commonpath((root, full)) != root:
+                self._json({'ok': False, 'error': 'invalid PCD path'}); return
+            if not os.path.isfile(full) or not full.lower().endswith('.pcd'):
+                self._json({'ok': False, 'error': 'PCD not found'}); return
+            length = int(self.headers.get('Content-Length', 0))
+            image = self.rfile.read(length)
+            if not image:
+                self._json({'ok': False, 'error': 'empty image'}); return
+            parsed = parse_pcd(full)
+            # Offline folder files are uploaded only as request-local staging
+            # copies.  Remove those copies after parsing so a later recursive
+            # folder selection cannot ingest its own previous uploads.
+            if rel.replace('\\', '/').startswith('_dropped/'):
+                try:
+                    os.remove(full)
+                except OSError:
+                    pass
+            if parsed.get('error'):
+                raise ValueError(parsed['error'])
+            fields = [str(f).lower() for f in parsed.get('fields', [])]
+            missing = [f for f in ('x', 'y', 'z') if f not in fields]
+            if missing:
+                raise ValueError('PCD missing fields: ' + ', '.join(missing))
+            import numpy as np
+            source = np.asarray(parsed.get('points'), dtype=np.float64)
+            columns = [fields.index('x'), fields.index('y'), fields.index('z')]
+            points = source[:, columns]
+            intensity_name = next((f for f in ('intensity', 'i', 'reflectivity') if f in fields), None)
+            if intensity_name:
+                points = np.column_stack((points, source[:, fields.index(intensity_name)]))
+            from model.fusion_model import render_offline
+            jpeg, meta = render_offline(image, points)
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('X-Projected-Points', str(meta.get('projected_points', 0)))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(jpeg)))
+            self.end_headers()
+            self.wfile.write(jpeg)
+        except Exception as e:
+            self._json({'ok': False, 'error': str(e)})
+
+    def _handle_fusion_offline_paths(self, body):
+        """Fuse one local PCD/image pair without browser uploads or staging copies."""
+        try:
+            data = json.loads(body or b'{}')
+            pcd_path = os.path.realpath(data.get('pcd', ''))
+            image_path = os.path.realpath(data.get('image', ''))
+            if not os.path.isfile(pcd_path) or not pcd_path.lower().endswith('.pcd'):
+                raise ValueError('PCD not found')
+            image_ext = os.path.splitext(image_path)[1].lower()
+            if not os.path.isfile(image_path) or image_ext not in ('.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tif', '.tiff'):
+                raise ValueError('image not found')
+            parsed = parse_pcd(pcd_path)
+            if parsed.get('error'):
+                raise ValueError(parsed['error'])
+            fields = [str(f).lower() for f in parsed.get('fields', [])]
+            missing = [f for f in ('x', 'y', 'z') if f not in fields]
+            if missing:
+                raise ValueError('PCD missing fields: ' + ', '.join(missing))
+            import numpy as np
+            source = np.asarray(parsed.get('points'), dtype=np.float64)
+            points = source[:, [fields.index('x'), fields.index('y'), fields.index('z')]]
+            intensity_name = next((f for f in ('intensity', 'i', 'reflectivity') if f in fields), None)
+            if intensity_name:
+                points = np.column_stack((points, source[:, fields.index(intensity_name)]))
+            with open(image_path, 'rb') as f:
+                image = f.read()
+            from model.fusion_model import render_offline
+            jpeg, meta = render_offline(image, points)
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('X-Projected-Points', str(meta.get('projected_points', 0)))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(jpeg)))
+            self.end_headers()
+            self.wfile.write(jpeg)
+        except Exception as e:
+            self._json({'ok': False, 'error': str(e)})
 
     def _handle_upload_ply(self):
         from config import config
@@ -878,6 +976,94 @@ class Handler(BaseHTTPRequestHandler):
                 from config import add_calib_image_dir
                 add_calib_image_dir(picked)
             self._json({'path': picked})
+        except Exception as e:
+            self._json({'path': '', 'error': str(e)})
+
+    def _handle_fusion_pick_dirs(self, params):
+        """Pick one local root and expose each matching direct child as a sensor source."""
+        kind = params.get('kind', ['pcd'])[0]
+        extensions = {'.pcd'} if kind == 'pcd' else {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tif', '.tiff'}
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            from config import config
+            root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)
+            picked = filedialog.askdirectory(
+                title='Select LiDAR Folder or Parent Folder' if kind == 'pcd' else 'Select Camera Folder or Parent Folder',
+                initialdir=config.data_dir if os.path.isdir(config.data_dir) else os.path.abspath(os.sep))
+            root.destroy()
+            if not picked:
+                self._json({'path': '', 'sources': []}); return
+            picked = os.path.normpath(picked)
+
+            def files_in(folder):
+                try:
+                    names = os.listdir(folder)
+                except OSError:
+                    return []
+                paths = [os.path.join(folder, name) for name in names
+                         if os.path.isfile(os.path.join(folder, name))
+                         and os.path.splitext(name)[1].lower() in extensions]
+                paths.sort(key=lambda path: os.path.basename(path).lower())
+                return [{'name': os.path.basename(path), 'path': path} for path in paths]
+
+            # Include files directly in the selected directory and every
+            # immediate sensor subdirectory.  This lets one parent-directory
+            # selection import several cameras/LiDARs in a single action.
+            candidates = [(picked, files_in(picked))]
+            for name in sorted(os.listdir(picked), key=str.lower):
+                folder = os.path.join(picked, name)
+                if os.path.isdir(folder) and name.lower() != '_dropped':
+                    files = files_in(folder)
+                    if files:
+                        candidates.append((folder, files))
+            sources = [{'name': os.path.basename(folder) or folder, 'path': folder, 'files': files}
+                       for folder, files in candidates if files]
+            self._json({'path': picked, 'sources': sources})
+        except Exception as e:
+            self._json({'path': '', 'sources': [], 'error': str(e)})
+
+    def _handle_fusion_pick_dataset(self, params):
+        """Pick one offline dataset root and discover JSON, LiDAR and camera sequences."""
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            from config import config
+            root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)
+            picked = filedialog.askdirectory(
+                title='Select Offline Fusion Dataset Folder',
+                initialdir=config.data_dir if os.path.isdir(config.data_dir) else os.path.abspath(os.sep))
+            root.destroy()
+            if not picked:
+                self._json({'path': ''}); return
+            picked = os.path.normpath(picked)
+
+            json_files = [name for name in os.listdir(picked)
+                          if os.path.isfile(os.path.join(picked, name)) and name.lower().endswith('.json')]
+            json_files.sort(key=lambda name: (0 if 'mainvehicle' in name.lower() else 1, name.lower()))
+            if not json_files:
+                self._json({'path': picked, 'error': 'Main vehicle JSON not found'}); return
+            json_name = json_files[0]
+            with open(os.path.join(picked, json_name), 'r', encoding='utf-8-sig') as f:
+                vehicle_json = json.load(f)
+
+            def discover(extensions):
+                sources = []
+                for folder in [picked] + [os.path.join(picked, name) for name in sorted(os.listdir(picked), key=str.lower)
+                                          if os.path.isdir(os.path.join(picked, name)) and name.lower() != '_dropped']:
+                    files = [{'name': name, 'path': os.path.join(folder, name)}
+                             for name in sorted(os.listdir(folder), key=str.lower)
+                             if os.path.isfile(os.path.join(folder, name))
+                             and os.path.splitext(name)[1].lower() in extensions]
+                    if files:
+                        sources.append({'name': os.path.basename(folder) or folder, 'path': folder, 'files': files})
+                return sources
+
+            self._json({
+                'path': picked, 'json_name': json_name, 'vehicle_json': vehicle_json,
+                'pcd_sources': discover({'.pcd'}),
+                'image_sources': discover({'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tif', '.tiff'}),
+            })
         except Exception as e:
             self._json({'path': '', 'error': str(e)})
 

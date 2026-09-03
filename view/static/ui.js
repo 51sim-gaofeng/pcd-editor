@@ -942,6 +942,13 @@ refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();_init
 const _CAM_PCD_SECTIONS=['sec-file','sec-play','sec-streaming','sec-dds'];
 let _camMode=false,_camActive=false,_camLastId=-1,_camSourceFrameId=-1,_camDisplayFrameId=-1;
 let _fusionMode=false,_calibrationMode=false,_fusionVehicleJson=null,_fusionSensors=[];
+let _fusionPcdSources=[],_fusionImageSources=[];
+let _fusionSelectedPcdSource=null,_fusionSelectedImageSource=null;
+let _fusionOfflineLidarSensor=null,_fusionOfflineCameraSensor=null;
+let _fusionOfflinePairs=[];
+let _fusionOfflineActive=false,_fusionOfflineAbort=null,_fusionOfflineBlobUrl=null;
+let _fusionOfflineHasStarted=false,_fusionOfflineRestartTimer=null;
+let _fusionOfflinePaused=false,_fusionOfflineIndex=0,_fusionOfflineNextIndex=null;
 let _fusionActive=false,_fusionLastSequence=-1,_fusionAbort=null,_fusionBlobUrl=null,_fusionPrevColorMode=null;
 let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0,_camLastBuf=null;
 let _camShowFps=true;
@@ -1061,6 +1068,7 @@ function switchMode(mode){
   _fusionMode=toFusion;
   _calibrationMode=toCalibration;
   if(!toFusion&&_fusionActive)fusionStop();
+  if(!toFusion&&_fusionOfflineActive)fusionOfflineStop();
   // Fusion defaults to Intensity color; remember the prior mode to restore on exit.
   const _cmSel=document.getElementById('color-mode');
   if(toFusion&&_fusionPrevColorMode===null&&_cmSel){
@@ -1375,6 +1383,11 @@ function _fusionFillSelect(id,category){
   sensors.forEach((s,i)=>{const o=document.createElement('option');o.value=s.path;o.textContent=s.name;o.dataset.index=String(i);el.appendChild(o);});
   if(sensors.length){el.value=sensors[0].path;}
 }
+function _fusionSetJsonReady(checked){
+  ['fusion-json-ready','fusion-offline-json-ready'].forEach(id=>{
+    const ready=document.getElementById(id);if(ready)ready.checked=!!checked;
+  });
+}
 function _fusionApplyParsedJson(parsed,label){
   const parameterList=document.getElementById('fusion-parameters');
   if(parameterList)parameterList.open=false;
@@ -1384,9 +1397,12 @@ function _fusionApplyParsedJson(parsed,label){
   _fusionSensors=found.filter(s=>{const key=s.category+'|'+s.path;if(seen.has(key))return false;seen.add(key);return true;});
   _fusionFillSelect('fusion-camera-select','camera');
   _fusionFillSelect('fusion-lidar-select','lidar');
+  _fusionAutoSelectSensor('pcd',_fusionSelectedPcdSource);
+  _fusionAutoSelectSensor('image',_fusionSelectedImageSource);
   const cameras=_fusionSensors.filter(s=>s.category==='camera').length;
   const lidars=_fusionSensors.filter(s=>s.category==='lidar').length;
   document.getElementById('fusion-json-name').textContent=label+' · '+cameras+' camera · '+lidars+' lidar';
+  _fusionSetJsonReady(true);
   fusionSelectionChanged();
 }
 async function _fusionRefreshJsonList(selectName){
@@ -1407,7 +1423,10 @@ async function fusionLoadSavedJson(name){
     if(!r.ok)throw new Error('not found on server');
     _fusionApplyParsedJson(await r.json(),name);
     setStatus('Loaded vehicle JSON: '+name,'ok');
-  }catch(e){setStatus('Load vehicle JSON failed: '+e.message,'err');}
+  }catch(e){
+    _fusionSetJsonReady(false);
+    setStatus('Load vehicle JSON failed: '+e.message,'err');
+  }
 }
 async function fusionImportVehicleJson(file){
   if(!file)return;
@@ -1423,6 +1442,7 @@ async function fusionImportVehicleJson(file){
     setStatus('Vehicle JSON imported','ok');
   }catch(e){
     _fusionVehicleJson=null;_fusionSensors=[];
+    _fusionSetJsonReady(false);
     document.getElementById('fusion-json-name').textContent='Import failed: '+e.message;
     document.getElementById('fusion-calibration-summary').textContent='Invalid vehicle JSON.';
     setStatus('Vehicle JSON import failed','err');
@@ -1430,6 +1450,188 @@ async function fusionImportVehicleJson(file){
     const input=document.getElementById('fusion-json-file');if(input)input.value='';
   }
 }
+async function fusionPickLocalFolders(kind){
+  try{
+    const r=await fetch('/api/fusion_pick_dirs?kind='+encodeURIComponent(kind));
+    const j=await r.json();
+    if(!j.path)return;
+    if(!j.sources||!j.sources.length){setStatus('No '+(kind==='pcd'?'PCD':'image')+' files found','err');return;}
+    const isPcd=kind==='pcd',sources=isPcd?_fusionPcdSources:_fusionImageSources;
+    j.sources.forEach(source=>{const i=sources.findIndex(x=>x.path===source.path);if(i>=0)sources[i]=source;else sources.push(source);});
+    _fusionRefreshFolderSelect(kind,j.sources[0].path);
+    setStatus((isPcd?'LiDAR':'Camera')+' folders imported: '+j.sources.length,'ok');
+  }catch(e){setStatus('Folder selection failed: '+e.message,'err');}
+}
+async function fusionPickOfflineDataset(){
+  try{
+    const r=await fetch('/api/fusion_pick_dataset');
+    const j=await r.json();
+    if(!j.path)return;
+    if(!j.vehicle_json)throw new Error(j.error||'Main vehicle JSON not found');
+    fusionOfflineStop();
+    _fusionOfflineHasStarted=false;
+    _fusionPcdSources=j.pcd_sources||[];
+    _fusionImageSources=j.image_sources||[];
+    _fusionApplyParsedJson(j.vehicle_json,j.json_name||'local vehicle JSON');
+    _fusionRefreshFolderSelect('pcd',_fusionPcdSources[0]?.path||'');
+    _fusionRefreshFolderSelect('image',_fusionImageSources[0]?.path||'');
+    if(!_fusionPcdSources.length||!_fusionImageSources.length)
+      throw new Error('LiDAR or Camera sequence folder not found');
+    setStatus('Offline dataset imported','ok');
+  }catch(e){setStatus('Offline dataset import failed: '+e.message,'err');}
+}
+function _fusionRefreshFolderSelect(kind,selectedPath){
+  const isPcd=kind==='pcd',sources=isPcd?_fusionPcdSources:_fusionImageSources;
+  const select=document.getElementById(isPcd?'fusion-pcd-folder-select':'fusion-image-folder-select');
+  select.innerHTML='<option value="">— select '+(isPcd?'LiDAR':'Camera')+' folder —</option>';
+  sources.forEach(source=>{const o=document.createElement('option');o.value=source.path;o.textContent=source.name+' · '+source.files.length;o.title=source.path;select.appendChild(o);});
+  select.value=selectedPath||sources[0]?.path||'';
+  const ready=document.getElementById(isPcd?'fusion-pcd-ready':'fusion-image-ready');if(ready)ready.checked=sources.length>0;
+  fusionFolderSelectionChanged(kind,select.value);
+}
+function fusionFolderSelectionChanged(kind,path){
+  const isPcd=kind==='pcd',sources=isPcd?_fusionPcdSources:_fusionImageSources;
+  const source=sources.find(x=>x.path===path)||null;
+  if(isPcd)_fusionSelectedPcdSource=source;else _fusionSelectedImageSource=source;
+  _fusionAutoSelectSensor(kind,source);
+  _fusionMatchOfflineFiles();
+  if(_fusionOfflineHasStarted&&_fusionOfflinePairs.length){
+    fusionOfflineStop();
+    clearTimeout(_fusionOfflineRestartTimer);
+    _fusionOfflineRestartTimer=setTimeout(()=>fusionOfflineStart(),0);
+  }
+}
+function _fusionAutoSelectSensor(kind,source){
+  const category=kind==='pcd'?'lidar':'camera';
+  if(kind==='pcd')_fusionOfflineLidarSensor=null;else _fusionOfflineCameraSensor=null;
+  if(!source||!_fusionSensors.length)return null;
+  const norm=value=>String(value||'').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,'');
+  const folderName=norm(source.name);
+  const candidates=_fusionSensors.filter(sensor=>sensor.category===category);
+  const sensor=candidates.find(item=>norm(item.name)===folderName)||null;
+  if(kind==='pcd')_fusionOfflineLidarSensor=sensor;else _fusionOfflineCameraSensor=sensor;
+  return sensor;
+}
+function _fusionMatchOfflineFiles(){
+  _fusionOfflinePairs=[];
+  const pcdFiles=_fusionSelectedPcdSource?.files||[],imageFiles=_fusionSelectedImageSource?.files||[];
+  if(!pcdFiles.length||!imageFiles.length)return false;
+  const stem=name=>name.replace(/\.[^.]+$/,'').toLocaleLowerCase();
+  const imagesByStem=new Map();
+  imageFiles.forEach(file=>{
+    const key=stem(file.name),queue=imagesByStem.get(key)||[];
+    queue.push(file);imagesByStem.set(key,queue);
+  });
+  const unmatchedPcd=[];
+  [...pcdFiles]
+    .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:'base'}))
+    .forEach(pcd=>{
+      const queue=imagesByStem.get(stem(pcd.name));
+      if(queue&&queue.length)_fusionOfflinePairs.push({name:stem(pcd.name),pcd,image:queue.shift()});
+      else unmatchedPcd.push(pcd);
+    });
+  const unmatchedImages=[...imagesByStem.values()].reduce((n,queue)=>n+queue.length,0);
+  const msg='Offline pairs: '+_fusionOfflinePairs.length
+    +' · unmatched PCD: '+unmatchedPcd.length+' · unmatched images: '+unmatchedImages;
+  setStatus(msg,_fusionOfflinePairs.length?'ok':'err');
+  return true;
+}
+async function fusionOfflineStart(){
+  if(_fusionOfflineActive){fusionOfflineStop();return;}
+  if(_fusionActive)fusionStop();
+  const camera=_fusionOfflineCameraSensor,lidar=_fusionOfflineLidarSensor;
+  if(!camera||!lidar){
+    const missing=[];
+    if(!lidar)missing.push('LiDAR folder "'+(_fusionSelectedPcdSource?.name||'')+'"');
+    if(!camera)missing.push('Camera folder "'+(_fusionSelectedImageSource?.name||'')+'"');
+    setStatus('No exact JSON sensor match for '+missing.join(' and '),'err');return;
+  }
+  if(!_fusionOfflinePairs.length){setStatus('No same-name PCD/image pairs found','err');return;}
+  const status=document.getElementById('fusion-offline-status');
+  const button=document.getElementById('fusion-offline-start-btn');
+  try{
+    _fusionOfflineHasStarted=true;
+    status.textContent='applying calibration…';
+    const configured=await fetch('/api/fusion_config',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        camera:{...camera.data,
+          _fusion_projection:String(camera.data?.params?.fisheye?.model||camera.data?.fisheye?.model||'').toLowerCase()==='polynomial'?'ftheta':undefined},
+        lidar:lidar.data
+      })
+    }).then(r=>r.json());
+    if(!configured.ok)throw new Error(configured.error||'configuration failed');
+    const projectionLabel=configured.projection_model==='ftheta'?'F-Theta':'Projection';
+    _fusionSyncViewOptions(1);
+    _fusionOfflineActive=true;_fusionOfflinePaused=false;_fusionOfflineIndex=0;_fusionOfflineNextIndex=null;
+    button.textContent='⏹ Stop Offline Fusion';
+    while(_fusionOfflineIndex<_fusionOfflinePairs.length&&_fusionOfflineActive){
+      while(_fusionOfflinePaused&&_fusionOfflineNextIndex===null&&_fusionOfflineActive)
+        await new Promise(resolve=>setTimeout(resolve,40));
+      if(!_fusionOfflineActive)break;
+      if(_fusionOfflineNextIndex!==null){
+        _fusionOfflineIndex=_fusionOfflineNextIndex;_fusionOfflineNextIndex=null;
+      }
+      const i=_fusionOfflineIndex,pair=_fusionOfflinePairs[i];
+      status.textContent=(_fusionOfflinePaused?'paused ':'processing ')+(i+1)+' / '+_fusionOfflinePairs.length+' · '+pair.name;
+      _fusionOfflineAbort=new AbortController();
+      const response=await fetch('/api/fusion_offline_paths',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({pcd:pair.pcd.path,image:pair.image.path}),signal:_fusionOfflineAbort.signal
+      });
+      const type=response.headers.get('content-type')||'';
+      if(!response.ok||type.includes('json')){
+        const error=await response.json().catch(()=>({}));
+        throw new Error(error.error||'offline fusion failed');
+      }
+      const blob=await response.blob();
+      const next=URL.createObjectURL(blob),previous=_fusionOfflineBlobUrl;
+      _fusionOfflineBlobUrl=next;
+      const img=document.getElementById('fusion-img');
+      img.onload=()=>{if(previous)URL.revokeObjectURL(previous);img.style.display='block';document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','none');};
+      img.src=next;
+      const badge=document.getElementById('fusion-badge');
+      badge.style.display='block';
+      badge.textContent='Offline '+projectionLabel+' · '+(i+1)+' / '+_fusionOfflinePairs.length+' · '+pair.name+' · '+(response.headers.get('x-projected-points')||'0')+' projected pts';
+      await new Promise(resolve=>setTimeout(resolve,100));
+      if(!_fusionOfflinePaused&&_fusionOfflineNextIndex===null)_fusionOfflineIndex++;
+    }
+    if(_fusionOfflineActive){status.textContent='completed · '+_fusionOfflinePairs.length+' pairs';setStatus('Offline fusion completed','ok');}
+  }catch(e){
+    if(e.name!=='AbortError'){status.textContent='error: '+e.message;setStatus('Offline fusion failed: '+e.message,'err');}
+  }finally{
+    _fusionOfflineActive=false;_fusionOfflineAbort=null;button.textContent='▶ Start Offline Fusion';
+  }
+}
+function fusionOfflineStop(){
+  _fusionOfflineActive=false;
+  _fusionOfflinePaused=false;_fusionOfflineNextIndex=null;
+  if(_fusionOfflineAbort){_fusionOfflineAbort.abort();_fusionOfflineAbort=null;}
+  const button=document.getElementById('fusion-offline-start-btn');if(button)button.textContent='▶ Start Offline Fusion';
+  const status=document.getElementById('fusion-offline-status');if(status)status.textContent='stopped · last frame retained';
+}
+function fusionOfflineTogglePause(){
+  if(!_fusionOfflineActive)return;
+  _fusionOfflinePaused=!_fusionOfflinePaused;
+  const status=document.getElementById('fusion-offline-status');
+  if(status)status.textContent=(_fusionOfflinePaused?'paused ':'playing ')+(_fusionOfflineIndex+1)+' / '+_fusionOfflinePairs.length;
+}
+function fusionOfflineStep(direction){
+  if(!_fusionOfflineActive||!_fusionOfflinePairs.length)return;
+  _fusionOfflinePaused=true;
+  _fusionOfflineNextIndex=Math.max(0,Math.min(_fusionOfflinePairs.length-1,_fusionOfflineIndex+direction));
+  const status=document.getElementById('fusion-offline-status');
+  if(status)status.textContent='seeking '+(_fusionOfflineNextIndex+1)+' / '+_fusionOfflinePairs.length;
+}
+document.addEventListener('keydown',e=>{
+  const tag=(e.target?.tagName||'').toLowerCase();
+  if(!_fusionMode||!_fusionOfflineActive||tag==='input'||tag==='select'||tag==='textarea')return;
+  if(e.code==='Space')fusionOfflineTogglePause();
+  else if(e.key==='ArrowLeft')fusionOfflineStep(-1);
+  else if(e.key==='ArrowRight')fusionOfflineStep(1);
+  else return;
+  e.preventDefault();e.stopImmediatePropagation();
+},true);
 function _fusionSelectedSensor(category){
   const id=category==='camera'?'fusion-camera-select':'fusion-lidar-select';
   const path=document.getElementById(id)?.value||'';
@@ -1538,6 +1740,7 @@ async function _fusionApply(camera,lidar){
 }
 async function fusionStart(){
   if(_fusionActive){fusionStop();return;}
+  if(_fusionOfflineActive)fusionOfflineStop();
   const camera=_fusionSelectedSensor('camera'),lidar=_fusionSelectedSensor('lidar');
   if(!camera||!lidar){setStatus('Select one camera and one LiDAR','err');return;}
   const status=document.getElementById('fusion-run-status');
@@ -1553,8 +1756,8 @@ async function fusionStart(){
 }
 // Push the View panel's current Size/Color to the server so fused frames match
 // the same controls that drive PCD/3DGS rendering.
-function _fusionSyncViewOptions(){
-  const sz=document.getElementById('pt-size')?.value;
+function _fusionSyncViewOptions(pointSizeOverride=null){
+  const sz=pointSizeOverride??document.getElementById('pt-size')?.value;
   const cm=document.getElementById('color-mode')?.value;
   const q=new URLSearchParams();
   if(sz!=null)q.set('point_size',String(Math.max(0,Math.min(8,Math.round(parseFloat(sz))))));

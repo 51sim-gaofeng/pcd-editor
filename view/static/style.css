@@ -217,6 +217,24 @@ canvas{display:block;width:100%;height:100%}
 .calib-result{max-height:250px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#070d18;border:1px solid #1e293b;border-radius:5px;padding:7px;color:#cbd5e1;font-size:.62rem;line-height:1.55}
 .fusion-empty{display:flex;flex-direction:column;align-items:center;gap:12px;color:#64748b}
 .fusion-hint{font-size:.64rem;color:#64748b;text-align:center;margin:5px 0}
+.fusion-local-files{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;padding-top:7px;border-top:1px solid #1e293b}
+.fusion-source-column{display:grid;gap:5px;min-width:0}
+.fusion-source-column>label{font-size:.68rem;color:#94a3b8}
+.fusion-source-column>label select{display:block;width:100%;margin-top:3px}
+.fusion-import-row{display:grid;grid-template-columns:minmax(0,1fr) 20px;gap:5px;align-items:center}
+.fusion-import-row .btn{width:100%}
+.fusion-offline-import-row{grid-template-columns:minmax(0,1.25fr) minmax(0,.75fr) 20px}
+.fusion-offline-import-row .btn{min-width:0;padding-left:5px;padding-right:5px;font-size:.65rem}
+.fusion-local-import{grid-template-columns:minmax(0,1fr) 20px;gap:4px;min-width:0}
+.fusion-local-import .btn{min-width:0;padding:4px 5px;font-size:.65rem}
+.fusion-local-import .fusion-import-check{width:18px;height:18px}
+.fusion-local-import .fusion-import-check:checked::after{font-size:12px}
+.fusion-import-check{appearance:none;width:18px;height:18px;margin:0;border:1px solid #334155;border-radius:4px;background:#111827;display:grid;place-content:center;opacity:1;cursor:default}
+.fusion-import-check:checked{background:#065f46;border-color:#10b981}
+.fusion-import-check:checked::after{content:'\2713';color:#d1fae5;font-size:12px;font-weight:800;line-height:1}
+.fusion-file-name{font-size:.62rem;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;margin-bottom:3px}
+#fusion-file-menu>summary{background:rgba(56,189,248,.45);border-left:5px solid #38bdf8;color:#e0f2fe}
+#fusion-streaming-menu>summary{background:rgba(132,204,22,.40);border-left:5px solid #84cc16;color:#ecfccb}
 .fusion-picker-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .fusion-picker-grid label{font-size:.68rem;color:#94a3b8}
 .fusion-picker-grid select{display:block;width:100%;margin-top:3px}
