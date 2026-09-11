@@ -64,7 +64,7 @@ EXCLUDES = [
     'numba', 'llvmlite',
     'IPython', 'jupyter', 'notebook', 'nbformat', 'nbconvert',
     'tornado', 'zmq', 'traitlets', 'jinja2',
-    'PIL', 'Pillow',
+    # NOTE: do NOT exclude PIL — the Viewer downscales camera frames with it
     'imageio',
     'sqlalchemy', 'psycopg2',
     'cryptography', 'OpenSSL',
@@ -100,6 +100,14 @@ a = Analysis(
         'model.calibration_model',
         'tkinter',
         'tkinter.filedialog',
+        # Pillow — server-side Viewer image downscaling (imported lazily)
+        'PIL',
+        'PIL.Image',
+        'PIL.JpegImagePlugin',
+        'PIL.PngImagePlugin',
+        'PIL.BmpImagePlugin',
+        'PIL.WebPImagePlugin',
+        'PIL.TiffImagePlugin',
         # pythonnet/clr — pywebview WinForms backend (Windows)
         'clr',
         'clr_loader',

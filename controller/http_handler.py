@@ -931,9 +931,12 @@ class Handler(BaseHTTPRequestHandler):
             try: ds = max(1, min(4, int(params.get('ds', ['1'])[0])))
             except Exception: ds = 1
             if ds > 1:
-                data = _fusion_load_scaled_image(image_path, ds)
-                ctype = 'image/jpeg'
-            else:
+                try:
+                    data = _fusion_load_scaled_image(image_path, ds)
+                    ctype = 'image/jpeg'
+                except ImportError:
+                    ds = 1          # no Pillow: serve full-res rather than failing outright
+            if ds == 1:
                 with open(image_path, 'rb') as f:
                     data = f.read()
                 ctype = self._FUSION_IMG_MIME[ext]
