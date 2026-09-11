@@ -76,6 +76,25 @@ Open **http://localhost:9089** in your browser, or just launch the binary on Win
 - `cam-status`: shows current receiver state and latest frame metadata.
 - `cam-bind-status`: shows current bind/listen endpoint and running status.
 
+### Viewer (offline dataset playback)
+- Default tab on startup. Plays back a recorded dataset of LiDAR sweeps + camera images as a synchronized, freely arrangeable multi-panel grid.
+- **One-click dataset import**: `Import Dataset` picks a dataset root and auto-discovers the main-vehicle JSON, every LiDAR folder and every camera folder, aligning them into one frame timeline by filename stem — no per-folder selection.
+- **Two modes, auto-detected**: with a vehicle JSON it runs in **Fusion mode** (LiDAR points projected onto each camera image using that camera's calibration); without one it runs in **Grid mode** (one image panel per camera, one independently orbitable 3D point-cloud panel per LiDAR).
+- **Arrangeable grid**: drag panels to reorder, switch a panel's source from its dropdown, set the column count, drag the row/column splitters, close individual panels, or maximize one. The layout is persisted per dataset in `localStorage`.
+- **Playback controls**: play / pause, step forward / back, speed slider (1–20 fps), point-size slider, plus a live readout of the *actual* render frame rate.
+- **Projection toggle & projection-LiDAR selector**: in Fusion mode, switch the point overlay off, or pick which LiDAR is projected — switching while paused stays paused.
+- **Zero-copy local reads**: images and point clouds are read straight from their absolute paths (`/api/fusion_image`, `/api/fusion_points`) — no upload and no staging copies.
+- **Downsample control** (`Full res` / `1/2` / `1/3` / `1/4`, default `1/2`): decimates points by uniform stride and scales images down before sending, cutting backend→browser traffic. Applies to LiDAR and cameras alike.
+- **Traffic follows visibility**: a closed panel costs nothing, maximizing one panel fetches only that panel's data, and the shared LiDAR frame is skipped entirely when projection is off or no image panel is visible.
+- **Tab-switch safe**: leaving the Viewer suspends playback instead of stopping it, so returning and pressing play resumes where you left off.
+
+#### Viewer Tab controls
+- `Import Dataset`: pick the dataset root (the dialog reopens at your last choice).
+- `Downsample`: point/image decimation factor used for every request.
+- `Proj LiDAR` selector + `On/Off`: choose and toggle the projected LiDAR (Fusion mode).
+- Playback bar (`◀◀ / ▶ / ▶▶`, `Speed <N> fps`, `Point size <N> px`): frame control and render options.
+- Panel header: source dropdown, `✕` close, `⛶` maximize; drag the header to reorder.
+
 ### Fusion (live LiDAR-camera projection)
 - Dedicated Fusion mode overlays live LiDAR points onto the live camera image using each sensor's calibration.
 - **Vehicle JSON import**: reads camera intrinsics/distortion + camera & LiDAR extrinsics from the main-vehicle JSON, then builds the camera-optical-from-LiDAR transform automatically.
@@ -275,6 +294,9 @@ All HTTP routing. Static files under `/static/*` are served from `view/static/`.
 | GET    | `/api/fusion_status`          | Fusion worker status + match telemetry   |
 | GET    | `/api/fusion_ensure`          | Start camera + LiDAR receivers for fusion |
 | GET    | `/api/fusion_render_options`  | Set projected-point size / color mode    |
+| GET    | `/api/fusion_pick_dataset`    | Pick a Viewer dataset root; returns vehicle JSON + discovered LiDAR/camera sequences |
+| GET    | `/api/fusion_points`          | Offline LiDAR frame as raw float32 `[x,y,z,intensity]` (cached, `ds=` decimation) |
+| GET    | `/api/fusion_image`           | Offline camera image by absolute path (`ds=` scales + caches a JPEG) |
 | POST   | `/api/fusion_config`          | Configure calibration from vehicle JSON  |
 | POST   | `/api/calibration_run`        | Start the offline calibration solve (async) |
 | GET    | `/api/calibration_progress`   | Poll live solve progress + per-frame status |
@@ -422,6 +444,16 @@ pip install pandas python-lzf
 ---
 
 ## Version Highlights
+
+### v0.9.2
+- Viewer tab (now the startup default): import a recorded dataset and play LiDAR + camera sequences back as a synchronized multi-panel grid, auto-detecting Fusion mode (vehicle JSON present) vs Grid mode.
+- Arrangeable panels — drag to reorder, per-panel source dropdown, column count, splitter resize, close, maximize — with the layout persisted per dataset.
+- Playback controls with speed (fps) and point size (px) sliders plus a live actual-frame-rate readout; projection toggle and projection-LiDAR selector.
+- `Downsample` control (Full / 1/2 / 1/3 / 1/4) decimates points and scales images server-side to cut backend→browser traffic.
+- Large CPU reduction for multi-camera playback: DCT-scaled JPEG decode (`Image.draft`), cached + deduplicated scaled images, camera-count-aware prefetch window with an in-flight cap, and a leaner WebGL path (no per-frame forced layout, cached GL locations, `texSubImage2D` RGB uploads, no color management on decode).
+- Traffic now follows visibility: closed panels fetch nothing, maximizing fetches only that panel, and point clouds are skipped when projection is off.
+- Dataset picker remembers the last folder; switching tabs suspends rather than stops playback.
+- Fix: switching the projection LiDAR rebuilds the frame timeline (and no longer auto-plays when paused).
 
 ### v0.9
 - Camera Calibration tab: offline intrinsics K + distortion D solve for Standard 5-param / 8-param (rational) / Fisheye models.

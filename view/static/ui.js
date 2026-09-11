@@ -175,6 +175,9 @@ document.addEventListener('keydown',function(e){
   if(e.key==='Escape'){exitAllModes();return;}
   const tabGs=document.getElementById('tab-gs');
   if(tabGs&&tabGs.classList.contains('active'))return;
+  // Fusion/Calibration/Camera modes have their own key handling; don't let the
+  // PCD playback shortcuts (arrows/space → loadFile) run and clobber them.
+  if(_fusionMode||_viewerMode||_calibrationMode||_camMode)return;
   const tag=document.activeElement.tagName;
   if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT')return;
   if(_ddsActive){
@@ -941,7 +944,7 @@ refreshList();refreshTrajList();ddsRefreshReceiverConfig();refreshGsList();_init
 // 鈹€鈹€ Camera mode (GVSP UDP receiver) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 const _CAM_PCD_SECTIONS=['sec-file','sec-play','sec-streaming','sec-dds'];
 let _camMode=false,_camActive=false,_camLastId=-1,_camSourceFrameId=-1,_camDisplayFrameId=-1;
-let _fusionMode=false,_calibrationMode=false,_fusionVehicleJson=null,_fusionSensors=[];
+let _fusionMode=false,_viewerMode=false,_calibrationMode=false,_fusionVehicleJson=null,_fusionSensors=[];
 let _fusionPcdSources=[],_fusionImageSources=[];
 let _fusionSelectedPcdSource=null,_fusionSelectedImageSource=null;
 let _fusionOfflineLidarSensor=null,_fusionOfflineCameraSensor=null;
@@ -949,7 +952,38 @@ let _fusionOfflinePairs=[];
 let _fusionOfflineActive=false,_fusionOfflineAbort=null,_fusionOfflineBlobUrl=null;
 let _fusionOfflineHasStarted=false,_fusionOfflineRestartTimer=null;
 let _fusionOfflinePaused=false,_fusionOfflineIndex=0,_fusionOfflineNextIndex=null;
+let _fusionOffline=null,_fusionOfflineFps=20,_fusionMaxCam=null;
+let _viewerPlayMode='';   // '', 'fusion', 'grid' — chosen from imported dataset contents
+let _fusionProjectEnabled=true;   // fusion mode: draw LiDAR points onto the camera panels
+const _FUSION_EMPTY=new Float32Array(0);
+let _fusionPointsCache=new Map(),_fusionStatsCache=new Map(),_fusionImageCache=new Map();
+let _fusionPointsInflight=new Map(),_fusionImageInflight=new Map();
+const _FUSION_PREFETCH_AHEAD=8,_FUSION_PTS_CACHE_MAX=20,_FUSION_IMG_CACHE_MAX=160,_FUSION_PREFETCH_MAX_INFLIGHT=12;
+let _viewerDownsample=2;   // Viewer tab: 1=full res, 2/3/4=uniform decimation to cut backend->browser bandwidth (default 1/2)
+let _fusionPtSize=2,_fusionFpsTs=0,_fusionFpsCount=0,_fusionLoopGen=0;
+let _fusionLayout={cols:0,slots:[],colFr:[],rowFr:[]},_fusionDragIdx=null,_fusionSlots=[];
+function _fusionColorMode(){return document.getElementById('color-mode')?.value||'intensity';}
+function _fusionPointSize(){return _fusionPtSize;}
+function fusionSetPointSize(v){
+  _fusionPtSize=Math.max(1,Math.min(10,parseInt(v,10)||2));
+  const el=document.getElementById('fusion-pt-size-val');if(el)el.textContent=_fusionPtSize+' px';
+  _fusionApplyViewOpts();
+}
+// Re-apply color/point-size to all viewports and redraw using the already
+// uploaded texture + points (no refetch), so changes are instant while paused.
+function _fusionApplyViewOpts(){
+  const cm=_fusionColorMode(),ps=_fusionPointSize();
+  if(_fusionLiveView){try{_fusionLiveView.setColorMode(cm);_fusionLiveView.setPointSize(ps);_fusionLiveView.render();}catch(_e){}}
+  if(!_fusionOffline)return;
+  _fusionSlots.forEach(slot=>{
+    if(slot.view){slot.view.setColorMode(cm);slot.view.setPointSize(ps);slot.view.render();}
+    if(slot.pointPanel){slot.pointPanel.setColorMode(cm);slot.pointPanel.setPointSize(ps);}
+  });
+  // Color mode changes need a rebuild of the point panels (LUT applied at build).
+  if(_fusionOfflinePaused&&_fusionSlots.some(s=>s.pointPanel))_fusionRenderFrame(_fusionOfflineIndex);
+}
 let _fusionActive=false,_fusionLastSequence=-1,_fusionAbort=null,_fusionBlobUrl=null,_fusionPrevColorMode=null;
+let _fusionLiveView=null,_fusionLiveCfg=null;
 let _camAbortCtrl=null,_camCurrentBlobUrl=null,_camRenderBusy=false,_camPendingFrame=null,_camCanvasCtx=null,_camFpsTs=0,_camFpsFrames=0,_camFps=0,_camLastBuf=null;
 let _camShowFps=true;
 function _camGetCanvasCtx(){
@@ -1060,53 +1094,59 @@ async function _camDrainFrames(){
 function switchMode(mode){
   const toCam=mode==='cam';
   const toFusion=mode==='fusion';
+  const toViewer=mode==='viewer';
   const toCalibration=mode==='calibration';
   const toGs=mode==='gs';
-  const toPcd=!toCam&&!toFusion&&!toCalibration&&!toGs;
-  if(_camMode===toCam&&_fusionMode===toFusion&&_calibrationMode===toCalibration&&!toGs){if(!toPcd)return;}
+  const toFusionLike=toFusion||toViewer;
+  const toPcd=!toCam&&!toFusion&&!toViewer&&!toCalibration&&!toGs;
+  if(_camMode===toCam&&_fusionMode===toFusion&&_viewerMode===toViewer&&_calibrationMode===toCalibration&&!toGs){if(!toPcd)return;}
   _camMode=toCam;
   _fusionMode=toFusion;
+  _viewerMode=toViewer;
   _calibrationMode=toCalibration;
   if(!toFusion&&_fusionActive)fusionStop();
-  if(!toFusion&&_fusionOfflineActive)fusionOfflineStop();
-  // Fusion defaults to Intensity color; remember the prior mode to restore on exit.
+  if(!toViewer&&_fusionOfflineActive)_viewerSuspend();
+  // Fusion/Viewer default to Intensity color; remember the prior mode to restore on exit.
   const _cmSel=document.getElementById('color-mode');
-  if(toFusion&&_fusionPrevColorMode===null&&_cmSel){
+  if(toFusionLike&&_fusionPrevColorMode===null&&_cmSel){
     _fusionPrevColorMode=_cmSel.value;
     _cmSel.value='intensity';applyColorMode('intensity');
-  }else if(!toFusion&&_fusionPrevColorMode!==null){
+  }else if(!toFusionLike&&_fusionPrevColorMode!==null){
     if(_cmSel){_cmSel.value=_fusionPrevColorMode;applyColorMode(_fusionPrevColorMode);}
     _fusionPrevColorMode=null;
   }
   document.getElementById('tab-pcd').classList.toggle('active',toPcd);
   document.getElementById('tab-cam').classList.toggle('active',toCam);
   document.getElementById('tab-fusion').classList.toggle('active',toFusion);
+  document.getElementById('tab-viewer')?.classList.toggle('active',toViewer);
   document.getElementById('tab-calibration')?.classList.toggle('active',toCalibration);
   const tabGs=document.getElementById('tab-gs');if(tabGs)tabGs.classList.toggle('active',toGs);
-  _CAM_PCD_SECTIONS.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion||toCalibration||toGs)?'none':'';});
+  _CAM_PCD_SECTIONS.forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion||toViewer||toCalibration||toGs)?'none':'';});
   // View/Edit Cloud/Trajectory toolbar also works in 3DGS mode (same camera/scene),
   // just not in Camera mode (no 3D scene there at all).
   const vpToolbar=document.getElementById('viewport-toolbar');if(vpToolbar)vpToolbar.style.display=(toCam||toCalibration)?'none':'';
   if(toCam||toCalibration)closeViewportPanel();
-  if(toCam||toFusion||toCalibration||toGs){
+  if(toCam||toFusion||toViewer||toCalibration||toGs){
     _stopPlay();               // stop PCD playback loop so it can't keep re-adding the cloud
     if(_smActive)streamingStop();
     if(_ddsActive)ddsStop();
   }
   const secCam=document.getElementById('sec-camera');if(secCam)secCam.style.display=toCam?'':'none';
   const secFusion=document.getElementById('sec-fusion');if(secFusion)secFusion.style.display=toFusion?'':'none';
+  const secViewer=document.getElementById('sec-viewer');if(secViewer)secViewer.style.display=toViewer?'':'none';
   const secCalibration=document.getElementById('sec-calibration');if(secCalibration)secCalibration.style.display=toCalibration?'':'none';
   if(toFusion)_fusionRefreshJsonList(document.getElementById('fusion-json-select')?.value||'');
   if(toCalibration)_calibRefreshRecentDirs(_calibImageDir);
   const secGs=document.getElementById('sec-gs');if(secGs)secGs.style.display=toGs?'':'none';
   const camWrap=document.getElementById('camera-wrap');if(camWrap)camWrap.classList.toggle('active',toCam);
-  const fusionWrap=document.getElementById('fusion-wrap');if(fusionWrap)fusionWrap.classList.toggle('active',toFusion);
+  const fusionWrap=document.getElementById('fusion-wrap');if(fusionWrap){fusionWrap.classList.toggle('active',toFusionLike);if(!toViewer){fusionWrap.classList.remove('fv-passthrough','fv-mixed');const cvEl=document.getElementById('cv');if(cvEl){cvEl.style.clipPath='';cvEl.style.zIndex='';}}}
+  if(toViewer&&_fusionOfflineActive)_viewerResume();
   const calibrationWrap=document.getElementById('calibration-wrap');if(calibrationWrap)calibrationWrap.classList.toggle('active',toCalibration);
   if(!toCalibration)calibCaptureStop(true);
   if(!toCalibration)_calibStopPlay();
-  ['cv','lasso-canvas'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion||toCalibration)?'none':'';});
-  const axesLabel=document.getElementById('axes-label');if(axesLabel)axesLabel.style.display=(toCam||toFusion||toCalibration)?'none':'';
-  const ovl=document.getElementById('overlay');if(ovl)ovl.style.display=(toCam||toFusion||toCalibration||toGs)?'none':'';
+  ['cv','lasso-canvas'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display=(toCam||toFusion||toViewer||toCalibration)?'none':'';});
+  const axesLabel=document.getElementById('axes-label');if(axesLabel)axesLabel.style.display=(toCam||toFusion||toViewer||toCalibration)?'none':'';
+  const ovl=document.getElementById('overlay');if(ovl)ovl.style.display=(toCam||toFusion||toViewer||toCalibration||toGs)?'none':'';
   const ovlText=ovl?.querySelector('span:last-child');if(ovlText)ovlText.textContent=toGs?'':'Select a PCD file';
   setGsOverlay(toGs?'idle':'hidden');
   if(!toCam){
@@ -1458,7 +1498,8 @@ async function fusionPickLocalFolders(kind){
     if(!j.sources||!j.sources.length){setStatus('No '+(kind==='pcd'?'PCD':'image')+' files found','err');return;}
     const isPcd=kind==='pcd',sources=isPcd?_fusionPcdSources:_fusionImageSources;
     j.sources.forEach(source=>{const i=sources.findIndex(x=>x.path===source.path);if(i>=0)sources[i]=source;else sources.push(source);});
-    _fusionRefreshFolderSelect(kind,j.sources[0].path);
+    if(isPcd)_fusionRefreshFolderSelect('pcd',j.sources[0].path);
+    else _fusionRefreshImageInfo();
     setStatus((isPcd?'LiDAR':'Camera')+' folders imported: '+j.sources.length,'ok');
   }catch(e){setStatus('Folder selection failed: '+e.message,'err');}
 }
@@ -1466,36 +1507,101 @@ async function fusionPickOfflineDataset(){
   try{
     const r=await fetch('/api/fusion_pick_dataset');
     const j=await r.json();
-    if(!j.path)return;
-    if(!j.vehicle_json)throw new Error(j.error||'Main vehicle JSON not found');
+    if(!j.path){if(j.error)setStatus(j.error,'err');return;}
     fusionOfflineStop();
     _fusionOfflineHasStarted=false;
     _fusionPcdSources=j.pcd_sources||[];
     _fusionImageSources=j.image_sources||[];
-    _fusionApplyParsedJson(j.vehicle_json,j.json_name||'local vehicle JSON');
-    _fusionRefreshFolderSelect('pcd',_fusionPcdSources[0]?.path||'');
-    _fusionRefreshFolderSelect('image',_fusionImageSources[0]?.path||'');
-    if(!_fusionPcdSources.length||!_fusionImageSources.length)
-      throw new Error('LiDAR or Camera sequence folder not found');
-    setStatus('Offline dataset imported','ok');
-  }catch(e){setStatus('Offline dataset import failed: '+e.message,'err');}
+    _fusionSelectedPcdSource=_fusionPcdSources[0]||null;
+    _fusionSelectedImageSource=_fusionImageSources[0]||null;
+    const hasJson=!!j.vehicle_json,hasPcd=_fusionPcdSources.length>0,hasImg=_fusionImageSources.length>0;
+    if(hasJson)_fusionApplyParsedJson(j.vehicle_json,j.json_name||'local vehicle JSON');
+    else{_fusionSensors=[];_fusionVehicleJson=null;_fusionSetJsonReady(false);}
+    // JSON + LiDAR + cameras → projection fusion (pick which LiDAR to project);
+    // otherwise a tiled grid: one independent 3D panel per LiDAR + one panel per
+    // camera folder. Nothing → empty.
+    _viewerPlayMode=(hasJson&&hasPcd&&hasImg)?'fusion':((hasPcd||hasImg)?'grid':'');
+    const label={fusion:'Fusion · LiDAR→camera projection · '+_fusionPcdSources.length+' LiDAR',
+                 grid:'Grid · '+_fusionPcdSources.length+' LiDAR + '+_fusionImageSources.length+' image panel'+(_fusionImageSources.length===1?'':'s'),
+                 '':'empty — no PCD or images found'}[_viewerPlayMode];
+    _viewerRefreshProjLidar();
+    const modeEl=document.getElementById('fusion-offline-mode');if(modeEl)modeEl.textContent='Mode: '+label;
+    setStatus(_viewerPlayMode?('Dataset imported · '+_viewerPlayMode+' mode'):'Dataset has no PCD or images',_viewerPlayMode?'ok':'err');
+    // Show the first frame right away (paused), so the user sees data on import.
+    if(_viewerPlayMode){
+      if(_fusionOfflineActive)fusionOfflineStop();
+      if(_viewerPlayMode==='grid')_viewerStartGrid(true);
+      else _viewerStartFusion(true);
+    }
+  }catch(e){setStatus('Dataset import failed: '+e.message,'err');}
+}
+// Fusion mode with several LiDAR folders: choose which one projects onto the
+// cameras (shown only when it matters).
+function _viewerRefreshProjLidar(){
+  const row=document.getElementById('viewer-proj-lidar-row'),sel=document.getElementById('viewer-proj-lidar');
+  if(!row||!sel)return;
+  const fusion=_viewerPlayMode==='fusion';
+  row.style.display=fusion?'':'none';
+  const toggle=document.getElementById('viewer-proj-toggle');
+  if(toggle){toggle.style.display=fusion?'':'none';toggle.textContent=_fusionProjectEnabled?'On':'Off';toggle.classList.toggle('ghost',!_fusionProjectEnabled);}
+  if(!fusion)return;
+  const multi=_fusionPcdSources.length>1;
+  sel.style.display=multi?'':'none';
+  if(multi){
+    sel.innerHTML=_fusionPcdSources.map((s,i)=>'<option value="'+i+'">'+_calibEsc(s.name)+'</option>').join('');
+    const cur=_fusionPcdSources.indexOf(_fusionSelectedPcdSource);
+    sel.value=String(cur>=0?cur:0);
+  }
+}
+function viewerSelectProjLidar(idx){
+  const src=_fusionPcdSources[parseInt(idx,10)||0];
+  if(!src)return;
+  const changed=src!==_fusionSelectedPcdSource;
+  _fusionSelectedPcdSource=src;
+  _fusionAutoSelectSensor?.('pcd',_fusionSelectedPcdSource);
+  // Rebuild the fusion timeline against the newly selected LiDAR when running,
+  // preserving the current play/pause state so a paused view stays paused.
+  if(changed&&_fusionOfflineActive){
+    const wasPaused=_fusionOfflinePaused;
+    fusionOfflineStop();
+    clearTimeout(_fusionOfflineRestartTimer);
+    _fusionOfflineRestartTimer=setTimeout(()=>{
+      if(_viewerPlayMode==='grid')_viewerStartGrid(wasPaused);
+      else _viewerStartFusion(wasPaused);
+    },0);
+  }
+}
+// Toggle whether the selected LiDAR is projected onto the camera panels.
+function viewerToggleProject(){
+  _fusionProjectEnabled=!_fusionProjectEnabled;
+  _viewerRefreshProjLidar();
+  if(_fusionOfflineActive)_fusionRenderFrame(_fusionOfflineIndex);
 }
 function _fusionRefreshFolderSelect(kind,selectedPath){
   const isPcd=kind==='pcd',sources=isPcd?_fusionPcdSources:_fusionImageSources;
   const select=document.getElementById(isPcd?'fusion-pcd-folder-select':'fusion-image-folder-select');
+  if(!select){if(!isPcd)_fusionRefreshImageInfo();return;}
   select.innerHTML='<option value="">— select '+(isPcd?'LiDAR':'Camera')+' folder —</option>';
   sources.forEach(source=>{const o=document.createElement('option');o.value=source.path;o.textContent=source.name+' · '+source.files.length;o.title=source.path;select.appendChild(o);});
   select.value=selectedPath||sources[0]?.path||'';
   const ready=document.getElementById(isPcd?'fusion-pcd-ready':'fusion-image-ready');if(ready)ready.checked=sources.length>0;
   fusionFolderSelectionChanged(kind,select.value);
 }
+// Cameras are no longer single-selected: every imported image folder becomes its
+// own fusion viewport, so just surface how many are loaded.
+function _fusionRefreshImageInfo(){
+  const n=_fusionImageSources.length;
+  const ready=document.getElementById('fusion-image-ready');if(ready)ready.checked=n>0;
+  const info=document.getElementById('fusion-image-info');
+  if(info)info.textContent=n?(n+' camera'+(n>1?'s':'')+': '+_fusionImageSources.map(s=>s.name).join(', ')):'no cameras';
+}
 function fusionFolderSelectionChanged(kind,path){
   const isPcd=kind==='pcd',sources=isPcd?_fusionPcdSources:_fusionImageSources;
   const source=sources.find(x=>x.path===path)||null;
   if(isPcd)_fusionSelectedPcdSource=source;else _fusionSelectedImageSource=source;
   _fusionAutoSelectSensor(kind,source);
-  _fusionMatchOfflineFiles();
-  if(_fusionOfflineHasStarted&&_fusionOfflinePairs.length){
+  // LiDAR change while running: re-apply with the newly selected LiDAR.
+  if(isPcd&&_fusionOfflineActive){
     fusionOfflineStop();
     clearTimeout(_fusionOfflineRestartTimer);
     _fusionOfflineRestartTimer=setTimeout(()=>fusionOfflineStart(),0);
@@ -1536,96 +1642,537 @@ function _fusionMatchOfflineFiles(){
   setStatus(msg,_fusionOfflinePairs.length?'ok':'err');
   return true;
 }
+// Match a JSON sensor to a folder by normalized name; fall back to the sole
+// sensor of that category when there is exactly one (folder name may differ).
+function _fusionMatchSensorByName(category,folderName){
+  const norm=v=>String(v||'').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,'');
+  const list=_fusionSensors.filter(s=>s.category===category);
+  const hit=list.find(s=>norm(s.name)===norm(folderName));
+  return hit||(list.length===1?list[0]:null);
+}
+// Build the multi-camera offline model: master timeline from LiDAR stems, one
+// viewport per camera image folder (matched to a JSON camera sensor).
+function _fusionBuildCameras(){
+  const stem=name=>name.replace(/\.[^.]+$/,'').toLocaleLowerCase();
+  const lidarSource=_fusionSelectedPcdSource,lidarSensor=_fusionMatchSensorByName('lidar',lidarSource?.name);
+  const pcdByStem=new Map();
+  (lidarSource?.files||[]).forEach(f=>{const k=stem(f.name);if(!pcdByStem.has(k))pcdByStem.set(k,f);});
+  const frames=[...pcdByStem.keys()].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true,sensitivity:'base'}));
+  const cams=[];
+  // Independent 3D point-cloud panel per LiDAR folder, shown alongside the
+  // camera projection panels (the selected LiDAR is also what projects).
+  _fusionPcdSources.forEach((src,idx)=>{
+    const map=new Map();
+    src.files.forEach(f=>{const k=stem(f.name);if(!map.has(k))map.set(k,f);});
+    cams.push({key:'L'+idx,name:src.name,isLidar:true,pcdByStem:map,imgByStem:new Map(),glcfg:null,projectionLabel:'LiDAR'});
+  });
+  _fusionImageSources.forEach((src,idx)=>{
+    const sensor=_fusionMatchSensorByName('camera',src.name);
+    if(!sensor)return;
+    const imgByStem=new Map();
+    src.files.forEach(f=>{const k=stem(f.name);if(!imgByStem.has(k))imgByStem.set(k,f);});
+    cams.push({key:'k'+idx,name:src.name,sensor,imgByStem,blobUrl:null,abort:null,projectionLabel:'Proj'});
+  });
+  return {frames,pcdByStem,cams,lidarSensor};
+}
+// ── Foxglove-style customizable layout (cols / reorder / resize / per-slot
+// camera / hide / persisted). Layout is keyed by the camera set and stored in
+// localStorage. Panels are created once per camera (one WebGL2 view each) and
+// only re-arranged; cameras are identified by folder name. ─────────────────
+function _fusionEscQuote(s){return String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");}
+function _fusionLayoutKey(cams){return 'fusionLayout:'+cams.map(c=>c.name).slice().sort().join('|');}
+function _fusionSaveLayout(){
+  if(!_fusionOffline)return;
+  try{localStorage.setItem(_fusionLayoutKey(_fusionOffline.cams),JSON.stringify(_fusionLayout));}catch(_e){}
+}
+function _fusionCamByName(name){return (_fusionOffline?.cams||[]).find(c=>c.name===name)||null;}
+function _fusionSlotIndex(panel){return _fusionSlots.findIndex(s=>s.panel===panel);}
+function _fusionInitLayout(cams){
+  const names=cams.map(c=>c.name);
+  let saved=null;
+  try{const s=localStorage.getItem(_fusionLayoutKey(cams));if(s){const o=JSON.parse(s);if(o&&Array.isArray(o.slots))saved=o;}}catch(_e){}
+  if(saved){
+    const slots=saved.slots.filter(sl=>sl&&names.includes(sl.cam)).map(sl=>({cam:sl.cam}));
+    _fusionLayout={cols:saved.cols|0,slots:slots.length?slots:names.map(n=>({cam:n})),
+      colFr:Array.isArray(saved.colFr)?saved.colFr:[],rowFr:Array.isArray(saved.rowFr)?saved.rowFr:[]};
+  }else{
+    _fusionLayout={cols:0,slots:names.map(n=>({cam:n})),colFr:[],rowFr:[]};
+  }
+}
+// Add-viewport menu: click a camera to open a new panel showing it (duplicates OK).
+function _fusionRefreshAddMenu(){
+  const menu=document.getElementById('fusion-cams-menu');if(!menu||!_fusionOffline)return;
+  menu.innerHTML=_fusionOffline.cams.map(c=>
+    '<div class="fv-add-item" onclick="fusionAddSlot(\''+_fusionEscQuote(c.name)+'\')">+ '+_calibEsc(c.name)+'</div>').join('');
+}
+function _fusionPlaceHandles(cols,rows){
+  const grid=document.getElementById('fusion-grid');if(!grid)return;
+  grid.querySelectorAll('.fv-rz').forEach(h=>h.remove());
+  if(grid.classList.contains('has-max'))return;
+  const rect=grid.getBoundingClientRect(),W=rect.width,H=rect.height;
+  const cf=_fusionLayout.colFr,rf=_fusionLayout.rowFr;
+  const csum=cf.reduce((a,b)=>a+b,0)||1,rsum=rf.reduce((a,b)=>a+b,0)||1;
+  let x=0;
+  for(let c=0;c<cols-1;c++){x+=cf[c]/csum*W;const h=document.createElement('div');h.className='fv-rz col';h.style.left=x+'px';h.addEventListener('mousedown',e=>_fusionStartResize(e,'col',c));grid.appendChild(h);}
+  let y=0;
+  for(let r=0;r<rows-1;r++){y+=rf[r]/rsum*H;const h=document.createElement('div');h.className='fv-rz row';h.style.top=y+'px';h.addEventListener('mousedown',e=>_fusionStartResize(e,'row',r));grid.appendChild(h);}
+}
+function _fusionStartResize(e,type,idx){
+  e.preventDefault();
+  const grid=document.getElementById('fusion-grid');const rect=grid.getBoundingClientRect();
+  const fr=type==='col'?_fusionLayout.colFr:_fusionLayout.rowFr;
+  const total=fr[idx]+fr[idx+1],sum=fr.reduce((a,b)=>a+b,0)||1;
+  const sizePx=(type==='col'?rect.width:rect.height)*(total/sum);
+  const start=type==='col'?e.clientX:e.clientY,startA=fr[idx];
+  const prop=type==='col'?'gridTemplateColumns':'gridTemplateRows';
+  function mv(ev){
+    const cur=type==='col'?ev.clientX:ev.clientY;
+    const a=Math.max(0.15,Math.min(total-0.15,startA+(cur-start)/sizePx*total));
+    fr[idx]=a;fr[idx+1]=total-a;
+    grid.style[prop]=fr.map(f=>f.toFixed(4)+'fr').join(' ');
+    _fusionPlaceHandles(_fusionLayout.colFr.length,_fusionLayout.rowFr.length);
+  }
+  function up(){document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);_fusionSaveLayout();}
+  document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);
+}
+function _fusionApplyLayout(){
+  const grid=document.getElementById('fusion-grid');if(!grid||!_fusionOffline)return;
+  const n=_fusionSlots.length||1;
+  const cols=Math.max(1,Math.min(n,_fusionLayout.cols||Math.ceil(Math.sqrt(n))));
+  const rows=Math.max(1,Math.ceil(n/cols));
+  if(_fusionLayout.colFr.length!==cols)_fusionLayout.colFr=Array(cols).fill(1);
+  if(_fusionLayout.rowFr.length!==rows)_fusionLayout.rowFr=Array(rows).fill(1);
+  grid.style.gridTemplateColumns=_fusionLayout.colFr.map(f=>f.toFixed(4)+'fr').join(' ');
+  grid.style.gridTemplateRows=_fusionLayout.rowFr.map(f=>f.toFixed(4)+'fr').join(' ');
+  const opts=_fusionOffline.cams.map(cc=>'<option value="'+_calibEsc(cc.name)+'">'+_calibEsc(cc.name)+'</option>').join('');
+  _fusionSlots.forEach(slot=>{
+    grid.appendChild(slot.panel);
+    const sel=slot.panel.querySelector('.fv-cam-sel');
+    if(sel){sel.innerHTML=opts;sel.value=slot.cam;}
+  });
+  _fusionRefreshAddMenu();
+  _fusionPlaceHandles(cols,rows);
+}
+// (Re)create one panel + WebGL view per slot. Slots are independent viewports:
+// several may show the same camera, each with its own camera dropdown.
+function _fusionRebuildSlots(){
+  const grid=document.getElementById('fusion-grid');if(!grid||!_fusionOffline)return;
+  grid.classList.remove('has-max');_fusionMaxCam=null;
+  _fusionSlots.forEach(s=>{try{s.view?.dispose();s.pointPanel?.dispose();}catch(_e){}});
+  _fusionSlots=[];grid.innerHTML='';
+  if(!_fusionLayout.slots.length)_fusionLayout.slots=[{cam:_fusionOffline.cams[0]?.name}];
+  _fusionLayout.slots.forEach(sl=>{
+    const cam=_fusionCamByName(sl.cam)||_fusionOffline.cams[0];
+    const panel=document.createElement('div');
+    panel.className='fv-panel'+(cam&&cam.isLidar?' fv-lidar':'');
+    panel.innerHTML='<div class="fv-head">'
+      +'<select class="fv-cam-sel" title="Camera shown here"></select>'
+      +'<span class="fv-badge"></span>'
+      +'<button class="fv-hide" title="Close this viewport">\u2715</button>'
+      +'<button class="fv-max" title="Maximize / restore">\u26F6</button></div>'
+      +'<div class="fv-body"><canvas class="fv-canvas"></canvas></div>';
+    grid.appendChild(panel);
+    const cv=panel.querySelector('.fv-canvas'),badge=panel.querySelector('.fv-badge');
+    let view=null,pointPanel=null;
+    if(cam&&cam.isLidar){   // independent 3D point-cloud viewport per LiDAR folder
+      if(window.createPointPanel){
+        try{pointPanel=window.createPointPanel(cv);pointPanel.setColorMode(_fusionColorMode());pointPanel.setPointSize(_fusionPointSize());}
+        catch(e){if(badge)badge.textContent='3D error: '+e.message;}
+      }
+      if(badge)badge.textContent=cam.name+' \u00b7 3D';
+    }else{
+      try{view=new window.FusionView(cv);if(cam&&cam.glcfg)view.setCalibration(cam.glcfg);}
+      catch(e){if(badge)badge.textContent='WebGL error: '+e.message;}
+    }
+    _fusionSlots.push({cam:sl.cam,panel,view,pointPanel});
+    panel.querySelector('.fv-hide').onclick=()=>fusionCloseSlot(_fusionSlotIndex(panel));
+    panel.querySelector('.fv-max').onclick=()=>fusionToggleMax(_fusionSlotIndex(panel));
+    panel.querySelector('.fv-cam-sel').onchange=e=>fusionSlotSetCam(_fusionSlotIndex(panel),e.target.value);
+    // Pointer-based drag-to-reorder (native HTML5 DnD is unreliable inside the
+    // embedded WebView2 window). Drag from the header, ignoring the dropdown/buttons.
+    const head=panel.querySelector('.fv-head');
+    head.style.cursor='move';
+    head.addEventListener('mousedown',e=>{
+      if(e.button!==0||e.target.closest('select,button'))return;
+      e.preventDefault();
+      const from=_fusionSlotIndex(panel);let dragging=false;
+      const sx=e.clientX,sy=e.clientY;
+      const clearOver=()=>grid.querySelectorAll('.fv-panel').forEach(p=>p.classList.remove('fv-drag-over'));
+      const onMove=ev=>{
+        if(!dragging){if(Math.abs(ev.clientX-sx)+Math.abs(ev.clientY-sy)<5)return;dragging=true;panel.classList.add('fv-dragging');}
+        clearOver();
+        const over=document.elementFromPoint(ev.clientX,ev.clientY)?.closest('.fv-panel');
+        if(over&&over!==panel)over.classList.add('fv-drag-over');
+      };
+      const onUp=ev=>{
+        document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);
+        panel.classList.remove('fv-dragging');clearOver();
+        if(!dragging)return;
+        const over=document.elementFromPoint(ev.clientX,ev.clientY)?.closest('.fv-panel');
+        if(over&&over!==panel){const to=_fusionSlots.findIndex(s=>s.panel===over);if(to>=0&&to!==from)fusionMoveSlot(from,to);}
+      };
+      document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);
+    });
+  });
+  grid.style.display='grid';
+  grid.style.top='38px';   // clear the top toolbar so panels aren't covered
+  document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','none');
+  document.getElementById('fusion-img').style.display='none';
+  document.getElementById('fusion-badge').style.display='none';
+  const liveCv=document.getElementById('fusion-live-canvas');if(liveCv)liveCv.style.display='none';
+  const tb=document.getElementById('fusion-toolbar');if(tb)tb.style.display='flex';
+  const colsSel=document.getElementById('fusion-cols');if(colsSel)colsSel.value=String(_fusionLayout.cols||0);
+  _fusionApplyLayout();
+}
+function _fusionBuildGrid(cams){_fusionInitLayout(cams);_fusionRebuildSlots();}
+function fusionSetCols(v){_fusionLayout.cols=parseInt(v,10)||0;_fusionLayout.colFr=[];_fusionLayout.rowFr=[];_fusionSaveLayout();_fusionApplyLayout();}
+function fusionResetLayout(){
+  if(!_fusionOffline)return;
+  try{localStorage.removeItem(_fusionLayoutKey(_fusionOffline.cams));}catch(_e){}
+  _fusionLayout={cols:0,slots:_fusionOffline.cams.map(c=>({cam:c.name})),colFr:[],rowFr:[]};
+  _fusionSaveLayout();_fusionRebuildSlots();
+  if(_fusionOfflinePaused)_fusionRenderFrame(_fusionOfflineIndex);
+  setStatus('Layout reset to default','ok');
+}
+function fusionSlotSetCam(i,camName){
+  const slot=_fusionSlots[i];if(!slot)return;
+  slot.cam=camName;if(_fusionLayout.slots[i])_fusionLayout.slots[i]={cam:camName};
+  const cam=_fusionCamByName(camName);
+  if(cam&&slot.view){try{slot.view.setCalibration(cam.glcfg);}catch(_e){}}
+  _fusionSaveLayout();
+  if(_fusionOfflinePaused)_fusionRenderFrame(_fusionOfflineIndex);
+}
+function fusionAddSlot(camName){
+  if(!_fusionOffline)return;
+  _fusionLayout.slots.push({cam:camName||_fusionOffline.cams[0]?.name});
+  _fusionLayout.colFr=[];_fusionLayout.rowFr=[];
+  _fusionSaveLayout();_fusionRebuildSlots();
+  const menu=document.getElementById('fusion-cams-menu');if(menu)menu.classList.remove('open');
+  if(_fusionOfflinePaused)_fusionRenderFrame(_fusionOfflineIndex);
+}
+function fusionCloseSlot(i){
+  if(i<0||_fusionSlots.length<=1)return;
+  _fusionLayout.slots.splice(i,1);
+  _fusionLayout.colFr=[];_fusionLayout.rowFr=[];
+  _fusionSaveLayout();_fusionRebuildSlots();
+  if(_fusionOfflinePaused)_fusionRenderFrame(_fusionOfflineIndex);
+}
+function fusionMoveSlot(from,to){
+  const ls=_fusionLayout.slots,rs=_fusionSlots;
+  if(from<0||to<0||from>=ls.length||to>=ls.length||from===to)return;
+  ls.splice(to,0,ls.splice(from,1)[0]);
+  rs.splice(to,0,rs.splice(from,1)[0]);
+  _fusionSaveLayout();_fusionApplyLayout();
+}
+function fusionToggleMax(i){
+  const grid=document.getElementById('fusion-grid');if(!grid)return;
+  const slot=_fusionSlots[i];if(!slot)return;
+  if(_fusionMaxCam===i){_fusionMaxCam=null;grid.classList.remove('has-max');_fusionSlots.forEach(s=>s.panel.classList.remove('max'));}
+  else{_fusionMaxCam=i;grid.classList.add('has-max');_fusionSlots.forEach((s,j)=>s.panel.classList.toggle('max',j===i));}
+  _fusionPlaceHandles(_fusionLayout.colFr.length,_fusionLayout.rowFr.length);
+  if(_fusionOfflinePaused)_fusionRenderFrame(_fusionOfflineIndex);
+}
+// Reposition resize handles when the grid changes size (window / sidebar drag).
+(function(){const g=document.getElementById('fusion-grid');if(g&&typeof ResizeObserver!=='undefined')new ResizeObserver(()=>{if(_fusionOffline&&g.style.display==='grid')_fusionPlaceHandles(_fusionLayout.colFr.length,_fusionLayout.rowFr.length);}).observe(g);})();
+function fusionSetFps(v){
+  _fusionOfflineFps=Math.max(1,Math.min(20,parseInt(v,10)||20));
+  const el=document.getElementById('fusion-fps-val');if(el)el.textContent=_fusionOfflineFps+' fps';
+}
+// Viewer tab: set point/image downsample factor (1=full,2/3/4). Flushes caches so
+// the new resolution takes effect, and re-renders the current frame when paused.
+function viewerSetDownsample(v){
+  _viewerDownsample=Math.max(1,Math.min(4,parseInt(v,10)||1));
+  _fusionPointsCache.clear();_fusionStatsCache.clear();_fusionPointsInflight.clear();
+  _fusionImageCache.forEach(b=>{try{b.close&&b.close();}catch(_e){}});_fusionImageCache.clear();_fusionImageInflight.clear();
+  if(_fusionOfflineActive&&_fusionOfflinePaused)_fusionRenderFrame(_fusionOfflineIndex);
+}
+// Point cloud fetch, deduplicated by path; caches the parsed Float32Array and
+// its color stats (computed off the render path, possibly by a prefetch call).
+async function _fusionFetchPoints(path,signal){
+  const cached=_fusionPointsCache.get(path);
+  if(cached){_fusionPointsCache.delete(path);_fusionPointsCache.set(path,cached);return cached;}
+  const inflight=_fusionPointsInflight.get(path);
+  if(inflight)return inflight;
+  const p=(async()=>{
+    const r=await fetch('/api/fusion_points?pcd='+encodeURIComponent(path)+(_viewerDownsample>1?'&ds='+_viewerDownsample:''),{signal,cache:'no-store'});
+    const ct=r.headers.get('content-type')||'';
+    if(!r.ok||ct.includes('json')){const e=await r.json().catch(()=>({}));throw new Error(e.error||'points load failed');}
+    const buf=new Float32Array(await r.arrayBuffer());
+    _fusionPointsCache.set(path,buf);
+    _fusionStatsCache.set(path,window.FusionView.computeStats(buf,buf.length>>2));
+    while(_fusionPointsCache.size>_FUSION_PTS_CACHE_MAX){const k=_fusionPointsCache.keys().next().value;_fusionPointsCache.delete(k);_fusionStatsCache.delete(k);}
+    return buf;
+  })();
+  _fusionPointsInflight.set(path,p);
+  try{return await p;}finally{_fusionPointsInflight.delete(path);}
+}
+// Image fetch → decoded ImageBitmap, deduplicated + LRU-cached so playback reuses
+// prefetched decodes instead of decoding JPEG on the render path every frame.
+async function _fusionGetImage(path){
+  const cached=_fusionImageCache.get(path);
+  if(cached){_fusionImageCache.delete(path);_fusionImageCache.set(path,cached);return cached;}
+  const inflight=_fusionImageInflight.get(path);
+  if(inflight)return inflight;
+  const p=(async()=>{
+    const r=await fetch('/api/fusion_image?path='+encodeURIComponent(path)+(_viewerDownsample>1?'&ds='+_viewerDownsample:''),{cache:'no-store'});
+    const ct=r.headers.get('content-type')||'';
+    if(!r.ok||ct.includes('json')){const e=await r.json().catch(()=>({}));throw new Error(e.error||'image load failed');}
+    const bm=await createImageBitmap(await r.blob(),{colorSpaceConversion:'none',premultiplyAlpha:'none'});
+    _fusionImageCache.set(path,bm);
+    while(_fusionImageCache.size>_FUSION_IMG_CACHE_MAX){const k=_fusionImageCache.keys().next().value;const old=_fusionImageCache.get(k);_fusionImageCache.delete(k);old&&old.close&&old.close();}
+    return bm;
+  })();
+  _fusionImageInflight.set(path,p);
+  try{return await p;}finally{_fusionImageInflight.delete(path);}
+}
+// Warm the caches for the next few frames so the render loop rarely blocks on IO.
+// Panels that need data this frame: maximizing hides every other panel, and
+// closing one removes its slot outright, so neither should cost any traffic.
+function _fusionVisibleSlots(){
+  return (_fusionMaxCam!=null&&_fusionSlots[_fusionMaxCam])?[_fusionSlots[_fusionMaxCam]]:_fusionSlots;
+}
+function _fusionVisibleCams(){
+  return [...new Set(_fusionVisibleSlots().map(s=>s.cam))].map(nm=>_fusionCamByName(nm)).filter(Boolean);
+}
+function _fusionPrefetch(fromIdx){
+  const built=_fusionOffline;if(!built)return;
+  const n=built.frames.length;if(!n)return;
+  const cams=_fusionVisibleCams().filter(c=>!c.isLidar);
+  // Keep the whole prefetch window resident: with many cameras an over-long
+  // window would exceed the LRU and thrash (re-decode on the server every frame).
+  const ahead=Math.max(1,Math.min(_FUSION_PREFETCH_AHEAD,Math.floor(_FUSION_IMG_CACHE_MAX/Math.max(1,cams.length))-1));
+  const needPoints=built.mode==='fusion'&&_fusionProjectEnabled&&cams.length>0;
+  for(let k=1;k<=ahead;k++){
+    if(_fusionImageInflight.size>=_FUSION_PREFETCH_MAX_INFLIGHT)break;   // don't thread-storm the server
+    const stem=built.frames[(fromIdx+k)%n];
+    const pcd=built.pcdByStem.get(stem);
+    if(pcd&&needPoints)_fusionFetchPoints(pcd.path).catch(()=>{});
+    cams.forEach(cam=>{const f=cam.imgByStem.get(stem);if(f)_fusionGetImage(f.path).catch(()=>{});});
+  }
+}
+async function _fusionRenderSlot(slot,stem,buf,stats){
+  const cam=_fusionCamByName(slot.cam);
+  const badge=slot.panel.querySelector('.fv-badge');
+  if(cam?.isLidar){   // independent 3D viewport, fetch this LiDAR's own frame
+    const f=cam.pcdByStem?.get(stem);
+    if(f&&slot.pointPanel){
+      try{const b=await _fusionFetchPoints(f.path);slot.pointPanel.setColorMode(_fusionColorMode());slot.pointPanel.setPointSize(_fusionPointSize());slot.pointPanel.loadPoints(b,4,['x','y','z','intensity']);if(badge)badge.textContent=cam.name+' \u00b7 '+(b.length>>2)+' pts';}
+      catch(e){if(badge)badge.textContent='err: '+e.message;}
+    }else if(badge)badge.textContent=cam.name+' \u00b7 no frame '+stem;
+    return;
+  }
+  if(!slot.view)return;
+  const imgFile=cam?.imgByStem.get(stem);
+  if(!cam||!imgFile){if(badge)badge.textContent='no image · '+stem;return;}
+  try{
+    const bitmap=await _fusionGetImage(imgFile.path);
+    slot.view.setImage(bitmap);
+    if(buf&&_fusionProjectEnabled){slot.view.setPoints(buf,buf.length>>2,stats);}
+    else{slot.view.setPoints(_FUSION_EMPTY,0,null);}
+    slot.view.setColorMode(_fusionColorMode());slot.view.setPointSize(_fusionPointSize());
+    slot.view.render();
+    if(badge)badge.textContent=stem+' · '+(cam.projectionLabel||'')+' · '+((buf&&_fusionProjectEnabled)?(buf.length>>2):0)+' pts';
+  }catch(e){if(badge)badge.textContent='err: '+e.message;}
+}
+async function _fusionRenderFrame(i){
+  const built=_fusionOffline;if(!built||!built.frames.length)return;
+  const stem=built.frames[i];
+  const idxEl=document.getElementById('fusion-frame-idx');if(idxEl)idxEl.textContent=(i+1)+' / '+built.frames.length+' \u00b7 '+stem;
+  const status=document.getElementById('fusion-offline-status');
+  if(status)status.textContent=(_fusionOfflinePaused?'paused ':'playing ')+(i+1)+' / '+built.frames.length+' \u00b7 '+stem;
+  let buf=null,stats=null;
+  // When a panel is maximized only it is visible — render just that one.
+  const active=_fusionVisibleSlots();
+  // The shared LiDAR frame is only needed when a visible image panel projects it.
+  const needPoints=_fusionProjectEnabled&&active.some(s=>!_fusionCamByName(s.cam)?.isLidar);
+  if(built.mode==='fusion'&&needPoints){const pcd=built.pcdByStem.get(stem);if(pcd){try{buf=await _fusionFetchPoints(pcd.path);stats=_fusionStatsCache.get(pcd.path);}catch(_e){}}}
+  await Promise.all(active.map(slot=>_fusionRenderSlot(slot,stem,buf,stats)));
+  _fusionPrefetch(i);
+  _fusionPrefetchLidar(i);
+  _fusionTickFps();
+}
+// Measured render frame rate (distinct from the Speed slider's target rate).
+function _fusionTickFps(){
+  _fusionFpsCount++;
+  const now=performance.now();
+  if(!_fusionFpsTs)_fusionFpsTs=now;
+  const span=now-_fusionFpsTs;
+  if(span>=500){
+    const el=document.getElementById('fusion-actual-fps');
+    if(el)el.textContent=(_fusionFpsCount*1000/span).toFixed(1)+' fps';
+    _fusionFpsCount=0;_fusionFpsTs=now;
+  }
+}
+function _fusionPrefetchLidar(fromIdx){
+  const built=_fusionOffline;if(!built)return;
+  const n=built.frames.length;if(!n)return;
+  const lidarCams=_fusionVisibleCams().filter(c=>c.isLidar);if(!lidarCams.length)return;
+  for(let k=1;k<=_FUSION_PREFETCH_AHEAD;k++){
+    const stem=built.frames[(fromIdx+k)%n];
+    lidarCams.forEach(c=>{const f=c.pcdByStem.get(stem);if(f)_fusionFetchPoints(f.path).catch(()=>{});});
+  }
+}
+async function _fusionPlayLoop(){
+  // Generation guard: pausing/stopping bumps the gen so only the newest loop
+  // advances. Restarting on resume also aborts any frame the old loop was stuck
+  // awaiting (a fetch cancelled mid-flight), which is what previously hung on
+  // pause→play.
+  const gen=++_fusionLoopGen;
+  const alive=()=>_fusionOfflineActive&&!_fusionOfflinePaused&&gen===_fusionLoopGen;
+  while(alive()){
+    const t0=performance.now();
+    const n=_fusionOffline.frames.length;
+    _fusionOfflineIndex=(_fusionOfflineIndex+1)%n;
+    await _fusionRenderFrame(_fusionOfflineIndex);
+    if(!alive())break;
+    const wait=Math.max(0,1000/_fusionOfflineFps-(performance.now()-t0));
+    await new Promise(r=>setTimeout(r,wait));
+  }
+}
 async function fusionOfflineStart(){
   if(_fusionOfflineActive){fusionOfflineStop();return;}
   if(_fusionActive)fusionStop();
-  const camera=_fusionOfflineCameraSensor,lidar=_fusionOfflineLidarSensor;
-  if(!camera||!lidar){
-    const missing=[];
-    if(!lidar)missing.push('LiDAR folder "'+(_fusionSelectedPcdSource?.name||'')+'"');
-    if(!camera)missing.push('Camera folder "'+(_fusionSelectedImageSource?.name||'')+'"');
-    setStatus('No exact JSON sensor match for '+missing.join(' and '),'err');return;
-  }
-  if(!_fusionOfflinePairs.length){setStatus('No same-name PCD/image pairs found','err');return;}
+  if(_viewerPlayMode==='grid')return _viewerStartGrid();
+  if(_viewerPlayMode!=='fusion'){setStatus('Import a dataset first','err');return;}
+  return _viewerStartFusion();
+}
+// Prepare the shared #fusion-wrap viewport for a tiled grid (fusion projection or
+// the no-JSON grid of image + independent-3D LiDAR panels). The main #cv is not
+// used here — each LiDAR tile owns its own WebGL point viewport.
+function _viewerResetViewport(){
+  const wrap=document.getElementById('fusion-wrap');if(!wrap)return;
+  wrap.classList.add('active');wrap.classList.remove('fv-passthrough','fv-mixed');
+  const mainCv=document.getElementById('cv'),lasso=document.getElementById('lasso-canvas'),axes=document.getElementById('axes-label');
+  if(mainCv){mainCv.style.display='none';mainCv.style.clipPath='';mainCv.style.zIndex='';}
+  if(lasso)lasso.style.display='none';
+  if(axes)axes.style.display='none';
+}
+// No-JSON grid: one independent 3D point-cloud panel per LiDAR folder + one image
+// panel per camera folder, all tiled together. Each LiDAR panel is its own WebGL
+// viewport (window.createPointPanel) so multiple LiDARs rotate independently.
+async function _viewerStartGrid(paused){
+  const stem=name=>name.replace(/\.[^.]+$/,'').toLocaleLowerCase();
+  const lidarCams=_fusionPcdSources.map((s,idx)=>{
+    const pcdByStem=new Map();
+    s.files.forEach(f=>{const k=stem(f.name);if(!pcdByStem.has(k))pcdByStem.set(k,f);});
+    return {key:'L'+idx,name:s.name,isLidar:true,pcdByStem,imgByStem:new Map(),glcfg:null,projectionLabel:'LiDAR'};
+  });
+  const imgCams=_fusionImageSources.map((s,idx)=>{
+    const imgByStem=new Map();
+    s.files.forEach(f=>{const k=stem(f.name);if(!imgByStem.has(k))imgByStem.set(k,f);});
+    return {key:'C'+idx,name:s.name,imgByStem,glcfg:null,projectionLabel:'Image'};
+  });
+  const cams=[...lidarCams,...imgCams];
+  if(!cams.length){setStatus('Dataset is empty','err');return;}
+  const stems=new Set();cams.forEach(c=>{c.pcdByStem?.forEach((_v,k)=>stems.add(k));c.imgByStem?.forEach((_v,k)=>stems.add(k));});
+  const frames=[...stems].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true,sensitivity:'base'}));
+  if(!frames.length){setStatus('No frames found in dataset','err');return;}
+  _fusionSlots.forEach(s=>{try{s.view?.dispose();s.pointPanel?.dispose();}catch(_e){}});_fusionSlots=[];
+  _fusionPointsCache.clear();_fusionStatsCache.clear();_fusionPointsInflight.clear();
+  _fusionImageCache.forEach(b=>{try{b.close&&b.close();}catch(_e){}});_fusionImageCache.clear();_fusionImageInflight.clear();
+  _viewerResetViewport();
+  _fusionOffline={frames,pcdByStem:new Map(),cams,lidarSensor:null,mode:'grid'};
+  _fusionOfflineActive=true;_fusionOfflinePaused=false;_fusionOfflineIndex=0;_fusionOfflineHasStarted=true;
+  _fusionBuildGrid(cams);
+  document.getElementById('fusion-playbar').style.display='flex';
+  const pb=document.getElementById('fusion-play-btn');if(pb)pb.textContent='\u23F8';
+  _fusionFpsTs=0;_fusionFpsCount=0;
+  await _fusionRenderFrame(0);
+  if(paused){_fusionOfflinePaused=true;if(pb)pb.textContent='\u25B6';}
+  _fusionPlayLoop();
+  setStatus('Grid playback \u00b7 '+lidarCams.length+' LiDAR + '+imgCams.length+' image \u00b7 '+frames.length+' frames','ok');
+}
+async function _viewerStartFusion(paused){
+  const built=_fusionBuildCameras();
+  if(!built.lidarSensor){setStatus('No JSON sensor match for LiDAR folder "'+(_fusionSelectedPcdSource?.name||'')+'"','err');return;}
+  if(!built.cams.some(c=>!c.isLidar)){setStatus('No camera folders matched to JSON cameras — import camera folders first','err');return;}
+  if(!built.frames.length){setStatus('No LiDAR frames found in selected folder','err');return;}
   const status=document.getElementById('fusion-offline-status');
-  const button=document.getElementById('fusion-offline-start-btn');
+  _fusionOfflineHasStarted=true;
+  status.textContent='applying calibration…';
   try{
-    _fusionOfflineHasStarted=true;
-    status.textContent='applying calibration…';
-    const configured=await fetch('/api/fusion_config',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        camera:{...camera.data,
-          _fusion_projection:String(camera.data?.params?.fisheye?.model||camera.data?.fisheye?.model||'').toLowerCase()==='polynomial'?'ftheta':undefined},
-        lidar:lidar.data
-      })
-    }).then(r=>r.json());
-    if(!configured.ok)throw new Error(configured.error||'configuration failed');
-    const projectionLabel=configured.projection_model==='ftheta'?'F-Theta':'Projection';
-    _fusionSyncViewOptions(1);
-    _fusionOfflineActive=true;_fusionOfflinePaused=false;_fusionOfflineIndex=0;_fusionOfflineNextIndex=null;
-    button.textContent='⏹ Stop Offline Fusion';
-    while(_fusionOfflineIndex<_fusionOfflinePairs.length&&_fusionOfflineActive){
-      while(_fusionOfflinePaused&&_fusionOfflineNextIndex===null&&_fusionOfflineActive)
-        await new Promise(resolve=>setTimeout(resolve,40));
-      if(!_fusionOfflineActive)break;
-      if(_fusionOfflineNextIndex!==null){
-        _fusionOfflineIndex=_fusionOfflineNextIndex;_fusionOfflineNextIndex=null;
-      }
-      const i=_fusionOfflineIndex,pair=_fusionOfflinePairs[i];
-      status.textContent=(_fusionOfflinePaused?'paused ':'processing ')+(i+1)+' / '+_fusionOfflinePairs.length+' · '+pair.name;
-      _fusionOfflineAbort=new AbortController();
-      const response=await fetch('/api/fusion_offline_paths',{
+    for(const cam of built.cams){
+      if(cam.isLidar)continue;   // LiDAR panels render raw points, no projection config
+      const projection=String(cam.sensor.data?.params?.fisheye?.model||cam.sensor.data?.fisheye?.model||'').toLowerCase()==='polynomial'?'ftheta':undefined;
+      const configured=await fetch('/api/fusion_config',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({pcd:pair.pcd.path,image:pair.image.path}),signal:_fusionOfflineAbort.signal
-      });
-      const type=response.headers.get('content-type')||'';
-      if(!response.ok||type.includes('json')){
-        const error=await response.json().catch(()=>({}));
-        throw new Error(error.error||'offline fusion failed');
-      }
-      const blob=await response.blob();
-      const next=URL.createObjectURL(blob),previous=_fusionOfflineBlobUrl;
-      _fusionOfflineBlobUrl=next;
-      const img=document.getElementById('fusion-img');
-      img.onload=()=>{if(previous)URL.revokeObjectURL(previous);img.style.display='block';document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','none');};
-      img.src=next;
-      const badge=document.getElementById('fusion-badge');
-      badge.style.display='block';
-      badge.textContent='Offline '+projectionLabel+' · '+(i+1)+' / '+_fusionOfflinePairs.length+' · '+pair.name+' · '+(response.headers.get('x-projected-points')||'0')+' projected pts';
-      await new Promise(resolve=>setTimeout(resolve,100));
-      if(!_fusionOfflinePaused&&_fusionOfflineNextIndex===null)_fusionOfflineIndex++;
+        body:JSON.stringify({key:cam.key,camera:{...cam.sensor.data,_fusion_projection:projection},lidar:built.lidarSensor.data})
+      }).then(r=>r.json());
+      if(!configured.ok)throw new Error('config failed for "'+cam.name+'": '+(configured.error||''));
+      const m=configured.camera_matrix;
+      const model=configured.projection_model==='ftheta'?2:(configured.projection_model==='fisheye_opencv'?1:0);
+      cam.glcfg={T:configured.T_camera_optical_from_lidar,K:[m[0][0],m[1][1],m[0][2],m[1][2]],
+                 model,distortion:configured.distortion||[],ftheta:configured.ftheta_poly||[],
+                 width:configured.width,height:configured.height};
+      cam.projectionLabel=model===2?'F-Theta':(model===1?'Fisheye':'Pinhole');
     }
-    if(_fusionOfflineActive){status.textContent='completed · '+_fusionOfflinePairs.length+' pairs';setStatus('Offline fusion completed','ok');}
-  }catch(e){
-    if(e.name!=='AbortError'){status.textContent='error: '+e.message;setStatus('Offline fusion failed: '+e.message,'err');}
-  }finally{
-    _fusionOfflineActive=false;_fusionOfflineAbort=null;button.textContent='▶ Start Offline Fusion';
-  }
+  }catch(e){status.textContent='error: '+e.message;setStatus('Offline fusion failed: '+e.message,'err');return;}
+  _fusionSlots.forEach(s=>{try{s.view?.dispose();}catch(_e){}});_fusionSlots=[];
+  _fusionImageCache.forEach(b=>{try{b.close&&b.close();}catch(_e){}});
+  _fusionImageCache.clear();_fusionPointsCache.clear();_fusionStatsCache.clear();
+  _fusionPointsInflight.clear();_fusionImageInflight.clear();
+  built.mode='fusion';
+  _fusionOffline=built;
+  _fusionOfflineActive=true;_fusionOfflinePaused=false;_fusionOfflineIndex=0;
+  _viewerResetViewport('grid');
+  _fusionBuildGrid(built.cams);
+  document.getElementById('fusion-playbar').style.display='flex';
+  const pb=document.getElementById('fusion-play-btn');if(pb)pb.textContent='\u23F8';
+  _fusionFpsTs=0;_fusionFpsCount=0;
+  await _fusionRenderFrame(0);
+  if(paused){_fusionOfflinePaused=true;if(pb)pb.textContent='\u25B6';}
+  _fusionPlayLoop();
+  setStatus('Offline fusion started · GPU · '+built.cams.length+' camera(s) · '+built.frames.length+' frames','ok');
 }
 function fusionOfflineStop(){
-  _fusionOfflineActive=false;
-  _fusionOfflinePaused=false;_fusionOfflineNextIndex=null;
-  if(_fusionOfflineAbort){_fusionOfflineAbort.abort();_fusionOfflineAbort=null;}
-  const button=document.getElementById('fusion-offline-start-btn');if(button)button.textContent='▶ Start Offline Fusion';
+  _fusionOfflineActive=false;_fusionOfflinePaused=false;_fusionOfflineNextIndex=null;_fusionLoopGen++;
+  if(_fusionOffline?.abort){try{_fusionOffline.abort.abort();}catch(_e){}}
   const status=document.getElementById('fusion-offline-status');if(status)status.textContent='stopped · last frame retained';
+  const pb=document.getElementById('fusion-play-btn');if(pb)pb.textContent='\u25B6';
+}
+// Leaving the Viewer tab: pause and halt the loop but keep the session so a later
+// return can resume it (instead of tearing everything down like fusionOfflineStop).
+function _viewerSuspend(){
+  if(!_fusionOfflineActive)return;
+  _fusionOfflinePaused=true;_fusionLoopGen++;
+  const pb=document.getElementById('fusion-play-btn');if(pb)pb.textContent='\u25B6';
+  const status=document.getElementById('fusion-offline-status');
+  if(status&&_fusionOffline)status.textContent='paused '+(_fusionOfflineIndex+1)+' / '+_fusionOffline.frames.length+' · resume on return';
+}
+// Returning to the Viewer tab with a suspended session: restore the grid view and
+// re-render the current (paused) frame so the play button resumes from here.
+function _viewerResume(){
+  if(!_fusionOfflineActive||!_fusionOffline)return;
+  const grid=document.getElementById('fusion-grid');if(grid){grid.style.display='grid';grid.style.top='38px';}
+  document.getElementById('fusion-live-canvas')?.style.setProperty('display','none');
+  document.getElementById('fusion-img')?.style.setProperty('display','none');
+  document.getElementById('fusion-badge')?.style.setProperty('display','none');
+  document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','none');
+  const pbar=document.getElementById('fusion-playbar');if(pbar)pbar.style.display='flex';
+  const tb=document.getElementById('fusion-toolbar');if(tb)tb.style.display='flex';
+  _fusionSlots.forEach(s=>{try{s.pointPanel?.resize?.();s.view?.resize?.();}catch(_e){}});
+  _fusionRenderFrame(_fusionOfflineIndex);
 }
 function fusionOfflineTogglePause(){
   if(!_fusionOfflineActive)return;
   _fusionOfflinePaused=!_fusionOfflinePaused;
+  const pb=document.getElementById('fusion-play-btn');if(pb)pb.textContent=_fusionOfflinePaused?'\u25B6':'\u23F8';
   const status=document.getElementById('fusion-offline-status');
-  if(status)status.textContent=(_fusionOfflinePaused?'paused ':'playing ')+(_fusionOfflineIndex+1)+' / '+_fusionOfflinePairs.length;
+  if(status&&_fusionOffline)status.textContent=(_fusionOfflinePaused?'paused ':'playing ')+(_fusionOfflineIndex+1)+' / '+_fusionOffline.frames.length;
+  if(_fusionOfflinePaused)_fusionLoopGen++;   // stop the running loop
+  else _fusionPlayLoop();                       // resume: fresh loop, unsticks any hung frame
 }
 function fusionOfflineStep(direction){
-  if(!_fusionOfflineActive||!_fusionOfflinePairs.length)return;
+  if(!_fusionOfflineActive||!_fusionOffline?.frames.length)return;
   _fusionOfflinePaused=true;
-  _fusionOfflineNextIndex=Math.max(0,Math.min(_fusionOfflinePairs.length-1,_fusionOfflineIndex+direction));
-  const status=document.getElementById('fusion-offline-status');
-  if(status)status.textContent='seeking '+(_fusionOfflineNextIndex+1)+' / '+_fusionOfflinePairs.length;
+  const pb=document.getElementById('fusion-play-btn');if(pb)pb.textContent='\u25B6';
+  const n=_fusionOffline.frames.length;
+  _fusionOfflineIndex=(_fusionOfflineIndex+direction+n)%n;
+  _fusionRenderFrame(_fusionOfflineIndex);
 }
 document.addEventListener('keydown',e=>{
   const tag=(e.target?.tagName||'').toLowerCase();
-  if(!_fusionMode||!_fusionOfflineActive||tag==='input'||tag==='select'||tag==='textarea')return;
+  if(!_viewerMode||!_fusionOfflineActive||tag==='input'||tag==='select'||tag==='textarea')return;
   if(e.code==='Space')fusionOfflineTogglePause();
   else if(e.key==='ArrowLeft')fusionOfflineStep(-1);
   else if(e.key==='ArrowRight')fusionOfflineStep(1);
@@ -1723,12 +2270,23 @@ function fusionSelectionChanged(){
 async function _fusionApply(camera,lidar){
   // Recompute the projection matrix (server-side) for the given sensors and
   // (re)bind the receivers to their ports — shared by start and live re-select.
+  const projection=String(camera.data?.params?.fisheye?.model||camera.data?.fisheye?.model||'').toLowerCase()==='polynomial'?'ftheta':undefined;
   const configResponse=await fetch('/api/fusion_config',{
     method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({camera:camera.data,lidar:lidar.data})
+    body:JSON.stringify({camera:{...camera.data,_fusion_projection:projection},lidar:lidar.data})
   });
   const configured=await configResponse.json();
   if(!configured.ok)throw new Error(configured.error||'configuration failed');
+  // Store the calibration for browser-side (GPU) projection, same shape as the
+  // offline fusion path's cam.glcfg.
+  const m=configured.camera_matrix;
+  const model=configured.projection_model==='ftheta'?2:(configured.projection_model==='fisheye_opencv'?1:0);
+  _fusionLiveCfg={T:configured.T_camera_optical_from_lidar,K:[m[0][0],m[1][1],m[0][2],m[1][2]],
+    model,distortion:configured.distortion||[],ftheta:configured.ftheta_poly||[],
+    width:configured.width,height:configured.height,
+    label:model===2?'F-Theta':(model===1?'Fisheye':'Pinhole')};
+  _fusionEnsureLiveView();
+  if(_fusionLiveView)try{_fusionLiveView.setCalibration(_fusionLiveCfg);}catch(_e){}
   const ip=(document.getElementById('fusion-lidar-ip')?.value||'127.0.0.1').trim();
   const q=new URLSearchParams({
     lidar_ip:ip,lidar_port:document.getElementById('fusion-lidar-port')?.value||'6699',
@@ -1738,37 +2296,37 @@ async function _fusionApply(camera,lidar){
   const started=await fetch('/api/fusion_ensure?'+q).then(r=>r.json());
   if(!started.ok)throw new Error(started.error||'receiver start failed');
 }
+function _fusionEnsureLiveView(){
+  const cv=document.getElementById('fusion-live-canvas');if(!cv)return;
+  if(_fusionLiveView)return;
+  try{_fusionLiveView=new window.FusionView(cv);}
+  catch(e){setStatus('WebGL init failed: '+e.message,'err');}
+}
 async function fusionStart(){
   if(_fusionActive){fusionStop();return;}
   if(_fusionOfflineActive)fusionOfflineStop();
   const camera=_fusionSelectedSensor('camera'),lidar=_fusionSelectedSensor('lidar');
   if(!camera||!lidar){setStatus('Select one camera and one LiDAR','err');return;}
+  // Live fusion renders on the GPU in a single canvas viewport; hide offline grid.
+  document.getElementById('fusion-grid').style.display='none';
+  document.getElementById('fusion-playbar').style.display='none';
+  document.getElementById('fusion-img').style.display='none';
+  const tb=document.getElementById('fusion-toolbar');if(tb)tb.style.display='none';
   const status=document.getElementById('fusion-run-status');
   try{
     status.textContent='applying calibration…';
     await _fusionApply(camera,lidar);
-    _fusionSyncViewOptions();
     _fusionActive=true;_fusionLastSequence=-1;
     status.textContent='waiting for camera/LiDAR frames…';
     document.getElementById('fusion-start-btn').textContent='⏹ Stop Fusion';
     void _fusionPoll();
   }catch(e){status.textContent='error: '+e.message;setStatus('Fusion start failed','err');}
 }
-// Push the View panel's current Size/Color to the server so fused frames match
-// the same controls that drive PCD/3DGS rendering.
-function _fusionSyncViewOptions(pointSizeOverride=null){
-  const sz=pointSizeOverride??document.getElementById('pt-size')?.value;
-  const cm=document.getElementById('color-mode')?.value;
-  const q=new URLSearchParams();
-  if(sz!=null)q.set('point_size',String(Math.max(0,Math.min(8,Math.round(parseFloat(sz))))));
-  if(cm)q.set('color_mode',cm);
-  if([...q.keys()].length)fetch('/api/fusion_render_options?'+q).catch(()=>{});
-}
 function fusionStop(){
   _fusionActive=false;
   if(_fusionAbort){_fusionAbort.abort();_fusionAbort=null;}
-  // Keep the last fused frame on screen (don't clear img / revoke blob / show
-  // the empty placeholder) so the result stays visible after stopping.
+  // Keep the last fused frame on the canvas (don't dispose the view) so the
+  // result stays visible after stopping.
   document.getElementById('fusion-start-btn').textContent='🔗 Apply & Start Fusion';
   document.getElementById('fusion-run-status').textContent='stopped · last frame retained';
 }
@@ -1782,20 +2340,28 @@ async function _fusionPoll(){
       const seq=parseInt(r.headers.get('x-fusion-sequence')||'-1',10);
       const cameraFrame=r.headers.get('x-camera-frame')||'-1';
       const lidarFrame=r.headers.get('x-lidar-frame')||'-1';
-      const projected=r.headers.get('x-projected-points')||'0';
-      const renderFps=r.headers.get('x-render-fps')||'-1';
-      const renderAvgMs=r.headers.get('x-render-avg-ms')||'-1';
       const buffer=await r.arrayBuffer();
       if(!buffer.byteLength)continue;
       _fusionLastSequence=seq;
-      const next=URL.createObjectURL(new Blob([buffer],{type:'image/jpeg'}));
-      const previous=_fusionBlobUrl;_fusionBlobUrl=next;
-      const img=document.getElementById('fusion-img');
-      img.onload=()=>{if(previous)URL.revokeObjectURL(previous);img.style.display='block';document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','none');};
-      img.src=next;
+      // Framed body: [uint32 imageLen][image bytes][points float32 Nx4].
+      const dv=new DataView(buffer);
+      const imgLen=dv.getUint32(0,true);
+      const imgBytes=new Uint8Array(buffer,4,imgLen);
+      const pts=new Float32Array(buffer.slice(4+imgLen));
+      const count=pts.length>>2;
+      if(_fusionLiveView){
+        const bitmap=await createImageBitmap(new Blob([imgBytes],{type:'image/jpeg'}));
+        _fusionLiveView.setImage(bitmap);
+        try{bitmap.close&&bitmap.close();}catch(_e){}
+        _fusionLiveView.setPoints(pts,count,window.FusionView.computeStats(pts,count));
+        _fusionLiveView.setColorMode(_fusionColorMode());
+        _fusionLiveView.setPointSize(_fusionPointSize());
+        _fusionLiveView.render();
+        const cv=document.getElementById('fusion-live-canvas');
+        if(cv&&cv.style.display==='none'){cv.style.display='block';document.querySelector('#fusion-wrap .fusion-empty')?.style.setProperty('display','none');}
+      }
       const badge=document.getElementById('fusion-badge');
-      const perfLabel=renderFps!=='-1'?(' · render '+renderFps+' fps ('+renderAvgMs+'ms/frame)'):'';
-      badge.style.display='block';badge.textContent='Camera '+cameraFrame+' · LiDAR '+lidarFrame+' · '+projected+' projected pts'+perfLabel;
+      badge.style.display='block';badge.textContent='Camera '+cameraFrame+' · LiDAR '+lidarFrame+' · '+count+' pts · '+(_fusionLiveCfg?.label||'');
       document.getElementById('fusion-run-status').textContent='running · sequence '+seq;
     }catch(e){
       if(e.name==='AbortError'||!_fusionActive||!_fusionMode)break;
@@ -2165,7 +2731,7 @@ setInterval(_refreshGsInfo,300);
 const _sidebar=document.getElementById('sidebar');
 const _handle=document.getElementById('resize-handle');
 const _toggle=document.getElementById('sidebar-toggle');
-let _sidebarW=360,_collapsed=false;
+let _sidebarW=420,_collapsed=false;
 function toggleSidebar(){
   _collapsed=!_collapsed;
   if(_collapsed){_sidebar.classList.add('collapsed');_sidebar.style.width='';_toggle.innerHTML='&#9654;';_handle.style.cursor='default';}
@@ -2279,3 +2845,5 @@ async function _initWelcomeOnStartup(){
     if(d.show_welcome_on_startup)showWelcomeModal();
   }catch(e){/* ignore: keep welcome modal hidden if the backend is unreachable */}
 }
+// Default to the Viewer tab on startup (after all const/let declarations, so no TDZ trap).
+switchMode('viewer');

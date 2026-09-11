@@ -38,7 +38,8 @@
 <div id="main-row">
 <aside id="sidebar">
   <div id="mode-tabs">
-    <button class="mode-tab active" id="tab-pcd" onclick="switchMode('pcd')">&#9729; Lidar</button>
+    <button class="mode-tab active" id="tab-viewer" onclick="switchMode('viewer')">&#127916; Viewer</button>
+    <button class="mode-tab" id="tab-pcd" onclick="switchMode('pcd')">&#9729; Lidar</button>
     <button class="mode-tab" id="tab-cam" onclick="switchMode('cam')">&#128247; Camera</button>
     <button class="mode-tab" id="tab-fusion" onclick="switchMode('fusion')">&#128279; Fusion</button>
     <button class="mode-tab" id="tab-calibration" onclick="switchMode('calibration')">&#127919; Calib</button>
@@ -169,42 +170,29 @@
       </div>
     </div>
   </details>
-  <div id="sec-fusion" style="display:none">
-    <details id="fusion-file-menu" open>
-      <summary>&#128194; Offline</summary>
+  <div id="sec-viewer" style="display:none">
       <div class="sec">
-        <div class="fusion-import-row fusion-offline-import-row">
-          <button class="btn ghost" onclick="fusionPickOfflineDataset()">
-            &#128194; Import Dataset
-          </button>
-          <button class="btn ghost" onclick="document.getElementById('fusion-json-file').click()">Import JSON</button>
-          <input id="fusion-offline-json-ready" class="fusion-import-check" type="checkbox" disabled title="Offline dataset imported">
+        <button class="btn ghost full-w" onclick="fusionPickOfflineDataset()">&#128194; Import Dataset</button>
+        <div id="fusion-offline-mode" class="fusion-hint" style="text-align:left">no dataset</div>
+        <div class="row" id="viewer-ds-row">
+          <span class="lbl" style="width:auto">Downsample</span>
+          <select class="full" id="viewer-ds" onchange="viewerSetDownsample(this.value)" title="Decimate points / shrink images to cut bandwidth">
+            <option value="1">Full res</option>
+            <option value="2" selected>1/2</option>
+            <option value="3">1/3</option>
+            <option value="4">1/4</option>
+          </select>
         </div>
-        <div class="fusion-local-files">
-          <div class="fusion-source-column">
-            <div class="fusion-import-row fusion-local-import">
-              <button class="btn ghost" onclick="fusionPickLocalFolders('pcd')">&#9729; LiDAR Folder</button>
-              <input id="fusion-pcd-ready" class="fusion-import-check" type="checkbox" disabled title="LiDAR PCD sequence imported">
-            </div>
-            <select id="fusion-pcd-folder-select" class="full" onchange="fusionFolderSelectionChanged('pcd',this.value)">
-              <option value="">— select LiDAR folder —</option>
-            </select>
-          </div>
-          <div class="fusion-source-column">
-            <div class="fusion-import-row fusion-local-import">
-              <button class="btn ghost" onclick="fusionPickLocalFolders('image')">&#128247; Camera Folder</button>
-              <input id="fusion-image-ready" class="fusion-import-check" type="checkbox" disabled title="Camera image sequence imported">
-            </div>
-            <select id="fusion-image-folder-select" class="full" onchange="fusionFolderSelectionChanged('image',this.value)">
-              <option value="">— select Camera folder —</option>
-            </select>
-          </div>
+        <div id="viewer-proj-lidar-row" class="row" style="display:none">
+          <span class="lbl">Project</span>
+          <select class="full" id="viewer-proj-lidar" onchange="viewerSelectProjLidar(this.value)"></select>
+          <button class="btn" id="viewer-proj-toggle" title="Project LiDAR onto images" onclick="viewerToggleProject()">On</button>
         </div>
-        <button class="btn full-w" id="fusion-offline-start-btn" onclick="fusionOfflineStart()">&#9654; Start Offline Fusion</button>
         <div id="fusion-offline-status" class="fusion-hint">off</div>
       </div>
-    </details>
-    <details id="fusion-streaming-menu">
+  </div>
+  <div id="sec-fusion" style="display:none">
+    <details id="fusion-streaming-menu" open>
       <summary>&#128225; Online</summary>
       <div class="sec">
         <input id="fusion-json-file" type="file" accept=".json,application/json"
@@ -538,7 +526,38 @@
         <span>Import vehicle JSON to configure fusion calibration</span>
       </div>
       <img id="fusion-img" alt="Fusion calibration" style="width:100%;height:100%;object-fit:contain;display:none">
+      <canvas id="fusion-live-canvas" style="width:100%;height:100%;object-fit:contain;display:none"></canvas>
       <div id="fusion-badge"></div>
+      <div id="fusion-toolbar" style="display:none">
+        <label class="fv-tb-label">Cols
+          <select id="fusion-cols" onchange="fusionSetCols(this.value)">
+            <option value="0">Auto</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option>
+          </select>
+        </label>
+        <div class="fv-tb-cams">
+          <button class="calib-pb-btn" onclick="document.getElementById('fusion-cams-menu').classList.toggle('open')">&#43; Add view &#9662;</button>
+          <div id="fusion-cams-menu" class="fv-cams-menu"></div>
+        </div>
+        <button class="calib-pb-btn" onclick="fusionResetLayout()" title="Reset to default grid">Reset</button>
+      </div>
+      <div id="fusion-grid" style="display:none"></div>
+      <div id="fusion-playbar" style="display:none">
+        <button class="calib-pb-btn" onclick="fusionOfflineStep(-1)" title="Previous frame">&#9664;&#9664;</button>
+        <button class="calib-pb-btn" id="fusion-play-btn" onclick="fusionOfflineTogglePause()" title="Play / Pause">&#9654;</button>
+        <button class="calib-pb-btn" onclick="fusionOfflineStep(1)" title="Next frame">&#9654;&#9654;</button>
+        <span id="fusion-frame-idx" class="calib-pb-idx">0 / 0</span>
+        <span id="fusion-actual-fps" class="calib-pb-idx" style="min-width:52px;color:#34d399">0 fps</span>
+        <span class="calib-pb-sep"></span>
+        <label class="fusion-fps-label">Speed
+          <input id="fusion-fps" type="range" min="1" max="20" value="20" oninput="fusionSetFps(this.value)">
+        </label>
+        <span id="fusion-fps-val" class="calib-pb-idx" style="min-width:34px">20 fps</span>
+        <span class="calib-pb-sep"></span>
+        <label class="fusion-fps-label">Point size
+          <input id="fusion-pt-size" type="range" min="1" max="10" value="2" oninput="fusionSetPointSize(this.value)">
+        </label>
+        <span id="fusion-pt-size-val" class="calib-pb-idx" style="min-width:30px">2 px</span>
+      </div>
     </div>
     <div id="calibration-wrap">
       <div id="calib-empty" class="fusion-empty"><span style="font-size:2.5rem">&#127919;</span><span>Select checkerboard images from multiple viewpoints or use local camera capture</span></div>
@@ -721,6 +740,7 @@
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"}}
 </script>
 <script type="module" src="/static/three_view.js"></script>
+<script src="/static/fusion_view.js"></script>
 <script defer src="/static/ui.js"></script>
 <div id="ctxmenu" style="position:fixed;display:none;z-index:99999;background:#1e293b;border:1px solid #334155;border-radius:4px;padding:4px 0;font-size:.72rem;color:#e2e8f0;box-shadow:0 4px 12px rgba(0,0,0,.4);min-width:90px;user-select:none">
   <div id="ctx-copy" style="padding:5px 14px;cursor:pointer">复制</div>

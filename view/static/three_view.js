@@ -964,3 +964,52 @@ window._three={
     if(_sceneAxesRoot)_sceneAxesRoot.visible=!!on;
   }
 };
+// ── Standalone point-cloud viewport: independent WebGL context + OrbitControls,
+// one per LiDAR tile in the Viewer grid (each panel shows its own cloud). Reuses
+// the shared height/intensity color logic; renders on demand (no idle rAF). ──
+function createPointPanel(canvas){
+  const rd=new THREE.WebGLRenderer({canvas,antialias:true});
+  rd.setPixelRatio(devicePixelRatio);rd.setClearColor(0x0a0c12);
+  const sc=new THREE.Scene();
+  const cam=new THREE.PerspectiveCamera(60,1,0.01,10000);
+  cam.position.set(...INIT_CAM_POS);cam.up.set(0,0,1);
+  const ctl=new OrbitControls(cam,canvas);ctl.target.set(...INIT_CAM_TARGET);ctl.update();
+  let cloud=null,psize=2,cmode='intensity',zLock=null,disposed=false;
+  const render=()=>{if(!disposed)rd.render(sc,cam);};
+  ctl.addEventListener('change',render);
+  const resize=()=>{const w=canvas.clientWidth||1,h=canvas.clientHeight||1;rd.setSize(w,h,false);cam.aspect=w/h;cam.updateProjectionMatrix();render();};
+  const ro=new ResizeObserver(resize);ro.observe(canvas);
+  function build(floats,nfields,fields){
+    const xi=fields.indexOf('x'),yi=fields.indexOf('y'),zi=fields.indexOf('z'),ii=fields.indexOf('intensity');
+    const n=(floats.length/nfields)|0;
+    const pos=new Float32Array(n*3),col=new Uint8Array(n*3);
+    let zMn=Infinity,zMx=-Infinity,iMx=-Infinity;
+    for(let i=0;i<n;i++){const z=floats[i*nfields+zi];if(z<zMn)zMn=z;if(z>zMx)zMx=z;if(ii>=0){const iv=floats[i*nfields+ii];if(iv>iMx)iMx=iv;}}
+    if(cmode==='height'){if(zLock){zMn=zLock.mn;zMx=zLock.mx;}else if(zMn!==Infinity)zLock={mn:zMn,mx:zMx};}
+    const zR=zMx-zMn||1,iMult=(ii>=0&&iMx>1.5)?1:255;
+    for(let i=0;i<n;i++){const b=i*nfields;
+      pos[i*3]=floats[b+xi];pos[i*3+1]=floats[b+yi];pos[i*3+2]=floats[b+zi];
+      let r,g,bl;
+      if(cmode==='height'){[r,g,bl]=heightColor((floats[b+zi]-zMn)/zR);}
+      else if(cmode==='intensity'&&ii>=0){const ri=Math.max(0,Math.min(255,((floats[b+ii]||0)*iMult+0.5)|0)),lo=ri*3;r=_streamingIntensityLUT[lo]/255;g=_streamingIntensityLUT[lo+1]/255;bl=_streamingIntensityLUT[lo+2]/255;}
+      else{r=0.4;g=0.8;bl=1.0;}
+      col[i*3]=r*255;col[i*3+1]=g*255;col[i*3+2]=bl*255;
+    }
+    const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(pos,3));geo.setAttribute('color',new THREE.BufferAttribute(col,3,true));geo.computeBoundingBox();
+    return new THREE.Points(geo,new THREE.PointsMaterial({size:psize*0.05,vertexColors:true,sizeAttenuation:true}));
+  }
+  return {
+    loadPoints(floats,nfields,fields){
+      const pc=build(floats,nfields,fields);
+      if(cloud){sc.remove(cloud);cloud.geometry.dispose();cloud.material.dispose();}
+      cloud=pc;sc.add(cloud);render();
+    },
+    setPointSize(s){psize=s;if(cloud)cloud.material.size=s*0.05;render();},
+    setColorMode(m){if(m!==cmode){cmode=m;if(m!=='height')zLock=null;}},
+    resetView(){cam.position.set(...INIT_CAM_POS);cam.up.set(0,0,1);ctl.target.set(...INIT_CAM_TARGET);ctl.update();render();},
+    resize,
+    dispose(){disposed=true;ro.disconnect();ctl.removeEventListener('change',render);ctl.dispose();if(cloud){cloud.geometry.dispose();cloud.material.dispose();}rd.dispose();}
+  };
+}
+window.createPointPanel=createPointPanel;
+

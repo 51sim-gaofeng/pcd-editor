@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import threading
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
@@ -40,6 +41,138 @@ from model.trajectory_model import (
     save_trajectory,
 )
 from config import get_app_info, get_welcome_pref, set_welcome_pref
+
+# ── Offline-fusion PCD point cache ──────────────────────────────────────────
+# One offline frame projects the *same* LiDAR PCD onto every camera, and forward
+# playback keeps advancing to new PCDs, so N cameras would otherwise re-read and
+# re-parse the identical file N times concurrently. Cache the parsed
+# x,y,z(,intensity) array keyed by (path, mtime) and deduplicate concurrent
+# loads of the same file so only one thread parses it.
+_fusion_pcd_cache = OrderedDict()
+_fusion_pcd_inflight = {}
+_fusion_pcd_lock = threading.Lock()
+_FUSION_PCD_CACHE_MAX = 12
+
+
+def _fusion_parse_points(pcd_path):
+    import numpy as np
+    parsed = parse_pcd(pcd_path)
+    if parsed.get('error'):
+        raise ValueError(parsed['error'])
+    fields = [str(f).lower() for f in parsed.get('fields', [])]
+    missing = [f for f in ('x', 'y', 'z') if f not in fields]
+    if missing:
+        raise ValueError('PCD missing fields: ' + ', '.join(missing))
+    source = np.asarray(parsed.get('points'), dtype=np.float64)
+    points = source[:, [fields.index('x'), fields.index('y'), fields.index('z')]]
+    intensity_name = next((f for f in ('intensity', 'i', 'reflectivity') if f in fields), None)
+    if intensity_name:
+        points = np.column_stack((points, source[:, fields.index(intensity_name)]))
+    return points
+
+
+def _fusion_load_points(pcd_path):
+    try:
+        mtime = os.path.getmtime(pcd_path)
+    except OSError:
+        mtime = 0
+    ckey = (pcd_path, mtime)
+    is_loader = False
+    with _fusion_pcd_lock:
+        cached = _fusion_pcd_cache.get(ckey)
+        if cached is not None:
+            _fusion_pcd_cache.move_to_end(ckey)
+            return cached
+        waiter = _fusion_pcd_inflight.get(ckey)
+        if waiter is None:
+            waiter = threading.Event()
+            _fusion_pcd_inflight[ckey] = waiter
+            is_loader = True
+    if not is_loader:
+        waiter.wait(timeout=10.0)
+        with _fusion_pcd_lock:
+            cached = _fusion_pcd_cache.get(ckey)
+        if cached is not None:
+            return cached
+        return _fusion_parse_points(pcd_path)  # loader failed/timed out
+    try:
+        points = _fusion_parse_points(pcd_path)
+        with _fusion_pcd_lock:
+            _fusion_pcd_cache[ckey] = points
+            _fusion_pcd_cache.move_to_end(ckey)
+            while len(_fusion_pcd_cache) > _FUSION_PCD_CACHE_MAX:
+                _fusion_pcd_cache.popitem(last=False)
+        return points
+    finally:
+        with _fusion_pcd_lock:
+            _fusion_pcd_inflight.pop(ckey, None)
+        waiter.set()
+
+
+# ── Offline-fusion downscaled-image cache ───────────────────────────────────
+# Grid playback re-requests the same images (prefetch + render + loop replay),
+# and decoding/encoding N cameras per frame is the dominant CPU cost. Cache the
+# encoded result and deduplicate concurrent requests for the same file.
+_fusion_img_cache = OrderedDict()
+_fusion_img_inflight = {}
+_fusion_img_lock = threading.Lock()
+_FUSION_IMG_CACHE_MAX = 128
+
+
+def _fusion_scale_image(image_path, ds):
+    import io
+    from PIL import Image
+    with Image.open(image_path) as im:
+        target = (max(1, im.width // ds), max(1, im.height // ds))
+        # JPEG-only fast path: libjpeg decodes at 1/2, 1/4 or 1/8 scale directly,
+        # so most of the pixels are never reconstructed at all.
+        im.draft('RGB', target)
+        if im.size != target:
+            im = im.convert('RGB').resize(target, Image.BILINEAR)
+        elif im.mode != 'RGB':
+            im = im.convert('RGB')
+        out = io.BytesIO()
+        im.save(out, 'JPEG', quality=80)
+        return out.getvalue()
+
+
+def _fusion_load_scaled_image(image_path, ds):
+    try:
+        mtime = os.path.getmtime(image_path)
+    except OSError:
+        mtime = 0
+    ckey = (image_path, mtime, ds)
+    is_loader = False
+    with _fusion_img_lock:
+        cached = _fusion_img_cache.get(ckey)
+        if cached is not None:
+            _fusion_img_cache.move_to_end(ckey)
+            return cached
+        waiter = _fusion_img_inflight.get(ckey)
+        if waiter is None:
+            waiter = threading.Event()
+            _fusion_img_inflight[ckey] = waiter
+            is_loader = True
+    if not is_loader:
+        waiter.wait(timeout=10.0)
+        with _fusion_img_lock:
+            cached = _fusion_img_cache.get(ckey)
+        if cached is not None:
+            return cached
+        return _fusion_scale_image(image_path, ds)  # loader failed/timed out
+    try:
+        data = _fusion_scale_image(image_path, ds)
+        with _fusion_img_lock:
+            _fusion_img_cache[ckey] = data
+            _fusion_img_cache.move_to_end(ckey)
+            while len(_fusion_img_cache) > _FUSION_IMG_CACHE_MAX:
+                _fusion_img_cache.popitem(last=False)
+        return data
+    finally:
+        with _fusion_img_lock:
+            _fusion_img_inflight.pop(ckey, None)
+        waiter.set()
+
 
 _STATIC_MIME = {
     '.css':  'text/css',
@@ -383,26 +516,35 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, IndexError):
                 after = -1
             from model.fusion_model import get_frame as fusion_frame
-            seq, jpeg, meta = fusion_frame(after, 2.0)
-            if jpeg is None:
+            seq, image, points, meta = fusion_frame(after, 2.0)
+            if image is None:
                 self._json({'changed': False, 'sequence': seq, **meta})
             else:
+                # Framed binary body: [uint32 imageLen][image bytes][points bytes].
+                # Points are float32 Nx4 [x,y,z,intensity]; the browser projects
+                # them onto the image on the GPU (fusion_view.js).
+                import struct
+                body = struct.pack('<I', len(image)) + image + points
                 try:
                     self.send_response(200)
-                    self.send_header('Content-Type', 'image/jpeg')
+                    self.send_header('Content-Type', 'application/octet-stream')
                     self.send_header('X-Fusion-Sequence', str(seq))
                     self.send_header('X-Camera-Frame', str(meta.get('camera_frame', -1)))
                     self.send_header('X-Lidar-Frame', str(meta.get('lidar_frame', -1)))
-                    self.send_header('X-Projected-Points', str(meta.get('projected_points', 0)))
+                    self.send_header('X-Point-Count', str(meta.get('point_count', 0)))
                     self.send_header('X-Match-Residual-Ms', str(meta.get('match_residual_ms', -1)))
-                    self.send_header('X-Render-Fps', str(meta.get('render_fps', -1)))
-                    self.send_header('X-Render-Avg-Ms', str(meta.get('render_avg_ms', -1)))
                     self.send_header('Cache-Control', 'no-store')
-                    self.send_header('Content-Length', str(len(jpeg)))
+                    self.send_header('Content-Length', str(len(body)))
                     self.end_headers()
-                    self.wfile.write(jpeg)
+                    self.wfile.write(body)
                 except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
                     pass
+
+        elif path == '/api/fusion_points':
+            self._handle_fusion_points(params)
+
+        elif path == '/api/fusion_image':
+            self._handle_fusion_image(params)
 
         elif path == '/api/gaussian_files':
             try:
@@ -465,7 +607,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 data = json.loads(body or b'{}')
                 from model.fusion_model import configure
-                self._json(configure(data.get('camera') or {}, data.get('lidar') or {}))
+                self._json(configure(data.get('camera') or {}, data.get('lidar') or {}, key=data.get('key')))
             except Exception as e:
                 self._json({'ok': False, 'error': str(e)})
         elif parsed.path == '/api/fusion_offline_paths':
@@ -735,23 +877,11 @@ class Handler(BaseHTTPRequestHandler):
             image_ext = os.path.splitext(image_path)[1].lower()
             if not os.path.isfile(image_path) or image_ext not in ('.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tif', '.tiff'):
                 raise ValueError('image not found')
-            parsed = parse_pcd(pcd_path)
-            if parsed.get('error'):
-                raise ValueError(parsed['error'])
-            fields = [str(f).lower() for f in parsed.get('fields', [])]
-            missing = [f for f in ('x', 'y', 'z') if f not in fields]
-            if missing:
-                raise ValueError('PCD missing fields: ' + ', '.join(missing))
-            import numpy as np
-            source = np.asarray(parsed.get('points'), dtype=np.float64)
-            points = source[:, [fields.index('x'), fields.index('y'), fields.index('z')]]
-            intensity_name = next((f for f in ('intensity', 'i', 'reflectivity') if f in fields), None)
-            if intensity_name:
-                points = np.column_stack((points, source[:, fields.index(intensity_name)]))
+            points = _fusion_load_points(pcd_path)
             with open(image_path, 'rb') as f:
                 image = f.read()
             from model.fusion_model import render_offline
-            jpeg, meta = render_offline(image, points)
+            jpeg, meta = render_offline(image, points, key=data.get('key'))
             self.send_response(200)
             self.send_header('Content-Type', 'image/jpeg')
             self.send_header('X-Projected-Points', str(meta.get('projected_points', 0)))
@@ -759,6 +889,60 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Length', str(len(jpeg)))
             self.end_headers()
             self.wfile.write(jpeg)
+        except Exception as e:
+            self._json({'ok': False, 'error': str(e)})
+
+    _FUSION_IMG_MIME = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+                        '.bmp': 'image/bmp', '.webp': 'image/webp', '.tif': 'image/tiff', '.tiff': 'image/tiff'}
+
+    def _handle_fusion_points(self, params):
+        """Return a LiDAR PCD as raw float32 [x,y,z,intensity] for GPU projection."""
+        try:
+            import numpy as np
+            pcd_path = os.path.realpath(params.get('pcd', [''])[0])
+            if not os.path.isfile(pcd_path) or not pcd_path.lower().endswith('.pcd'):
+                self._json({'ok': False, 'error': 'PCD not found'}); return
+            pts = _fusion_load_points(pcd_path)              # Nx3 or Nx4 float64 (cached)
+            try: ds = max(1, min(4, int(params.get('ds', ['1'])[0])))
+            except Exception: ds = 1
+            if ds > 1:
+                pts = pts[::ds]                              # uniform-stride decimation to cut bandwidth
+            n = len(pts)
+            out = np.zeros((n, 4), np.float32)
+            out[:, :pts.shape[1]] = pts[:, :4]               # intensity stays 0 when absent
+            buf = out.tobytes()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('X-Point-Count', str(n))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(buf)))
+            self.end_headers()
+            self.wfile.write(buf)
+        except Exception as e:
+            self._json({'ok': False, 'error': str(e)})
+
+    def _handle_fusion_image(self, params):
+        """Serve a camera image straight from its absolute path (no re-encode)."""
+        try:
+            image_path = os.path.realpath(params.get('path', [''])[0])
+            ext = os.path.splitext(image_path)[1].lower()
+            if not os.path.isfile(image_path) or ext not in self._FUSION_IMG_MIME:
+                self._json({'ok': False, 'error': 'image not found'}); return
+            try: ds = max(1, min(4, int(params.get('ds', ['1'])[0])))
+            except Exception: ds = 1
+            if ds > 1:
+                data = _fusion_load_scaled_image(image_path, ds)
+                ctype = 'image/jpeg'
+            else:
+                with open(image_path, 'rb') as f:
+                    data = f.read()
+                ctype = self._FUSION_IMG_MIME[ext]
+            self.send_response(200)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
         except Exception as e:
             self._json({'ok': False, 'error': str(e)})
 
@@ -1028,24 +1212,26 @@ class Handler(BaseHTTPRequestHandler):
         try:
             import tkinter as tk
             from tkinter import filedialog
-            from config import config
+            from config import config, get_last_dataset_dir, save_last_dataset_dir
             root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)
+            init_dir = get_last_dataset_dir() or (config.data_dir if os.path.isdir(config.data_dir) else os.path.abspath(os.sep))
             picked = filedialog.askdirectory(
                 title='Select Offline Fusion Dataset Folder',
-                initialdir=config.data_dir if os.path.isdir(config.data_dir) else os.path.abspath(os.sep))
+                initialdir=init_dir)
             root.destroy()
             if not picked:
                 self._json({'path': ''}); return
             picked = os.path.normpath(picked)
+            save_last_dataset_dir(picked)
 
             json_files = [name for name in os.listdir(picked)
                           if os.path.isfile(os.path.join(picked, name)) and name.lower().endswith('.json')]
             json_files.sort(key=lambda name: (0 if 'mainvehicle' in name.lower() else 1, name.lower()))
-            if not json_files:
-                self._json({'path': picked, 'error': 'Main vehicle JSON not found'}); return
-            json_name = json_files[0]
-            with open(os.path.join(picked, json_name), 'r', encoding='utf-8-sig') as f:
-                vehicle_json = json.load(f)
+            json_name = json_files[0] if json_files else ''
+            vehicle_json = None
+            if json_name:
+                with open(os.path.join(picked, json_name), 'r', encoding='utf-8-sig') as f:
+                    vehicle_json = json.load(f)
 
             def discover(extensions):
                 sources = []

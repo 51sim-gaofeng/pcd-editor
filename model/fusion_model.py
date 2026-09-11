@@ -14,8 +14,15 @@ from model.streaming_model import get_fusion_frames as get_lidar_frames
 _lock = threading.RLock()
 _cond = threading.Condition(_lock)
 _config = None
+# Per-camera offline calibrations, keyed by camera id, so a multi-camera dataset
+# can project the same LiDAR frame onto each camera independently.
+_configs = {}
 _sequence = -1
 _jpeg = b''
+# Raw matched frame for GPU (browser-side) projection: the unprojected camera
+# image bytes plus the LiDAR points as float32 Nx4 [x,y,z,intensity] bytes.
+_live_image = b''
+_live_points = b''
 _meta = {}
 _last_lidar_fid = None
 _worker = None
@@ -86,7 +93,7 @@ def _pose(sensor: dict):
     return translation, _rotation_zyx(*angles)
 
 
-def configure(camera: dict, lidar: dict) -> dict:
+def configure(camera: dict, lidar: dict, key=None) -> dict:
     global _config, _last_lidar_fid
     params = camera.get('params') or camera
     intr = camera.get('intrinsics') or params.get('intrinsics') or params.get('distortion') or {}
@@ -146,16 +153,25 @@ def configure(camera: dict, lidar: dict) -> dict:
     transform = np.eye(4)
     transform[:3,:3] = axes @ camera_r.T @ lidar_r
     transform[:3,3] = axes @ camera_r.T @ (lidar_t - camera_t)
-    with _lock:
-        _config = {'camera_matrix': np.asarray(matrix, np.float64),
-                   'distortion': np.asarray(distortion, np.float64),
-                   'ftheta_poly': ftheta_poly,
-                   'projection_model': projection_model,
-                   'transform': transform, 'width': width, 'height': height}
-        _last_lidar_fid = None
-    _ensure_worker()
+    cfg = {'camera_matrix': np.asarray(matrix, np.float64),
+           'distortion': np.asarray(distortion, np.float64),
+           'ftheta_poly': ftheta_poly,
+           'projection_model': projection_model,
+           'transform': transform, 'width': width, 'height': height}
+    if key is not None:
+        # Offline multi-camera: store per-camera without touching the live
+        # single-config or spawning the live matching worker.
+        with _lock:
+            _configs[str(key)] = cfg
+    else:
+        with _lock:
+            _config = cfg
+            _last_lidar_fid = None
+        _ensure_worker()
     return {'ok': True, 'camera_matrix': matrix, 'projection_model': projection_model,
             'ftheta_poly': None if ftheta_poly is None else ftheta_poly.tolist(),
+            'distortion': [float(x) for x in np.asarray(distortion, np.float64).ravel()],
+            'width': width, 'height': height,
             'T_camera_optical_from_lidar': transform.tolist()}
 
 
@@ -252,10 +268,13 @@ def _render(camera: dict, lidar: dict, cfg: dict, opts: dict):
     return encoded.tobytes(), len(pixels)
 
 
-def render_offline(image_bytes: bytes, points) -> tuple[bytes, dict]:
+def render_offline(image_bytes: bytes, points, key=None) -> tuple[bytes, dict]:
     """Render one locally supplied image/point-cloud pair with current calibration."""
     with _lock:
-        cfg = copy.deepcopy(_config)
+        # Keyed offline configs are set once at start and never mutated during
+        # playback, and _render only reads cfg, so a reference (no deepcopy) is
+        # safe and avoids per-frame/per-camera copy overhead.
+        cfg = _configs.get(str(key)) if key is not None else copy.deepcopy(_config)
         opts = dict(_render_opts)
     if not cfg:
         raise ValueError('fusion calibration is not configured')
@@ -278,14 +297,13 @@ def _circular_ms_diff(a: int, b: int, wrap: int = 65536) -> int:
 
 
 def _worker_loop():
-    global _sequence, _jpeg, _meta, _last_lidar_fid
+    global _sequence, _live_image, _live_points, _meta, _last_lidar_fid
     while True:
         try:
             cameras, lidars = get_fusion_frames(), get_lidar_frames()
             with _lock:
-                cfg = copy.deepcopy(_config)
-                opts = dict(_render_opts)
-            if not cfg or not cameras or not lidars:
+                configured = _config is not None
+            if not configured or not cameras or not lidars:
                 time.sleep(.03); continue
             # Anchor on the newest completed LiDAR frame rather than the newest
             # camera frame: LiDAR is the slower/sparser sensor (~100ms per full
@@ -322,11 +340,21 @@ def _worker_loop():
                 # moment, which would otherwise look like a bad/wrong calibration.
                 _last_lidar_fid = lidar_fid
                 time.sleep(.01); continue
-            jpeg, projected = _render(camera, lidar, cfg, opts)
+            # Projection is now done on the GPU in the browser (same code path as
+            # offline fusion), so the worker only matches sensors and ships the
+            # raw camera image + LiDAR points; no server-side OpenCV projection.
+            pts = np.asarray(lidar['points'], np.float32)
+            if pts.ndim != 2 or pts.shape[1] < 3:
+                _last_lidar_fid = lidar_fid; time.sleep(.01); continue
+            if pts.shape[1] == 3:
+                pts = np.concatenate([pts, np.zeros((len(pts), 1), np.float32)], axis=1)
+            else:
+                pts = np.ascontiguousarray(pts[:, :4], np.float32)
             with _cond:
-                _last_lidar_fid = lidar_fid; _sequence += 1; _jpeg = jpeg
+                _last_lidar_fid = lidar_fid; _sequence += 1
+                _live_image = camera['jpeg']; _live_points = pts.tobytes()
                 _meta = {'camera_frame': _camera_key(camera), 'lidar_frame': lidar_fid,
-                         'projected_points': projected, 'match_residual_ms': residual_ms}
+                         'point_count': len(pts), 'match_residual_ms': residual_ms}
                 _cond.notify_all()
         except Exception as exc:
             with _lock:
@@ -344,10 +372,17 @@ def _ensure_worker():
 
 
 def get_frame(after: int, timeout: float = 2.0):
+    """Return the latest matched frame's raw camera image + LiDAR points.
+
+    The browser projects points onto the image on the GPU (see fusion_view.js),
+    so this ships raw data instead of a server-rendered JPEG.
+    """
     with _cond:
         if _sequence == after:
             _cond.wait(timeout)
-        return _sequence, _jpeg if _sequence != after else None, dict(_meta)
+        if _sequence == after:
+            return _sequence, None, None, dict(_meta)
+        return _sequence, _live_image, _live_points, dict(_meta)
 
 
 def get_status():

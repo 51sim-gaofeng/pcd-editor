@@ -6,7 +6,7 @@ import argparse
 import subprocess
 
 APP_NAME = '51sim Sensor Data Viewer'
-APP_VERSION = '0.9'
+APP_VERSION = '0.9.2'
 
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 _app_info_cache = None
@@ -94,6 +94,17 @@ def save_last_dir(path: str) -> None:
 def _load_last_dir() -> str:
     """Return the last-used directory, or '' if not saved."""
     path = _read_state().get('last_dir', '')
+    return path if path and os.path.isdir(path) else ''
+
+
+def save_last_dataset_dir(path: str) -> None:
+    """Persist the last-used offline Viewer dataset folder."""
+    _write_state({'last_dataset_dir': path})
+
+
+def get_last_dataset_dir() -> str:
+    """Return the last-used Viewer dataset folder, or '' if missing."""
+    path = _read_state().get('last_dataset_dir', '')
     return path if path and os.path.isdir(path) else ''
 
 
