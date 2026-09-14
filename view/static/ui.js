@@ -1963,7 +1963,7 @@ async function _fusionRenderSlot(slot,stem,buf,stats){
   }
   if(!slot.view)return;
   const imgFile=cam?.imgByStem.get(stem);
-  if(!cam||!imgFile){if(badge)badge.textContent='no image · '+stem;return;}
+  if(!cam||!imgFile){if(badge)badge.textContent=(cam?cam.name+' · ':'')+'no image · '+stem;return;}
   try{
     const bitmap=await _fusionGetImage(imgFile.path);
     slot.view.setImage(bitmap);
@@ -1971,7 +1971,7 @@ async function _fusionRenderSlot(slot,stem,buf,stats){
     else{slot.view.setPoints(_FUSION_EMPTY,0,null);}
     slot.view.setColorMode(_fusionColorMode());slot.view.setPointSize(_fusionPointSize());
     slot.view.render();
-    if(badge)badge.textContent=stem+' · '+(cam.projectionLabel||'')+' · '+((buf&&_fusionProjectEnabled)?(buf.length>>2):0)+' pts';
+    if(badge)badge.textContent=cam.name+' · '+stem+' · '+((buf&&_fusionProjectEnabled)?(buf.length>>2):0)+' pts';
   }catch(e){if(badge)badge.textContent='err: '+e.message;}
 }
 async function _fusionRenderFrame(i){
